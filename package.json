@@ -1,0 +1,35 @@
+{
+  "name": "illust-vcs",
+  "version": "1.0.0",
+  "description": "version control system for drawing",
+  "author": "motttey",
+  "private": true,
+  "scripts": {
+    "dev": "nuxi dev",
+    "build": "nuxi build",
+    "start": "nuxi start",
+    "generate": "nuxi generate",
+    "preview": "nuxi preview"
+  },
+  "dependencies": {
+    "@createjs/easeljs": "^2.0.0-beta.4",
+    "@createjs/tweenjs": "^2.0.0-beta.4",
+    "@types/createjs": "0.0.29",
+    "bootstrap": "^5.0.0",
+    "bootstrap-vue-next": "^0.42.0",
+    "child_process": "^1.0.2",
+    "createjs": "^1.0.1",
+    "crypto-js": "^4.2.0",
+    "d3": "^7.8.2",
+    "d3-dag": "^0.5.0",
+    "nuxt": "^4.2.2"
+  },
+  "devDependencies": {
+    "@bootstrap-vue-next/nuxt": "^0.42.0",
+    "@nuxt/typescript-build": "^3.0.2",
+    "@types/crypto-js": "^4.2.2"
+  },
+  "browser": {
+    "child_process": false
+  }
+}
