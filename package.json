@@ -27,7 +27,8 @@
   "devDependencies": {
     "@bootstrap-vue-next/nuxt": "^0.42.0",
     "@nuxt/typescript-build": "^3.0.2",
-    "@types/crypto-js": "^4.2.2"
+    "@types/crypto-js": "^4.2.2",
+    "@types/d3": "^7.4.3"
   },
   "browser": {
     "child_process": false
