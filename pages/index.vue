@@ -13,11 +13,10 @@
       </div>
 
       <div id="revisions">
-        <ul>
-          <li v-for="revision in all_revisions" :key="revision.hash">
-            {{ revision.layer_revs[layer_index] }}
-          </li>
-        </ul>
+        <div class="revisions_header">
+          <span>Revisions (selected layer: {{ layer_index }})</span>
+          <small class="operation_hint">s: save / r: redo / ctrl: undo / l: change layer</small>
+        </div>
       </div>
 
       <div id="layers">
@@ -31,22 +30,26 @@
         </span>
       </div>
 
-      <div id="canvas_holder">
-        <canvas id="layer1" width="960" height="540"></canvas>
-        <canvas id="layer2" width="960" height="540"></canvas>
-        <canvas id="drawingCanvas" width="960" height="540"></canvas>
-      </div>
+      <div id="work_area">
+        <div id="canvas_holder">
+          <canvas id="layer1" width="960" height="800"></canvas>
+          <canvas id="layer2" width="960" height="800"></canvas>
+          <canvas id="drawingCanvas" width="960" height="800"></canvas>
+        </div>
 
-      <div id="dag_div">
-        <svg id="dag"></svg>
+        <div id="dag_div">
+          <svg id="dag"></svg>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import sha256 from 'crypto-js/sha256'
+import * as d3 from "d3";
+import * as d3dag from "d3-dag";
 
 type Layer = {
   index: number
@@ -70,6 +73,13 @@ const all_stage_layers = ref<Layer[]>([])
 const new_shape: any = ref(null)
 const surface_layer_shape: any = ref(null)
 const all_revisions = ref<Revision[]>([])
+
+type DagNodeDatum = {
+  id: string
+  parentIds: string[]
+  revs: any[]
+  index: number
+}
 
 let easljs: any
 
@@ -152,13 +162,182 @@ function saveRevision() {
 
   all_stage_layers.value.forEach((layer) => {
     const rev = layer.stage_layer.children.map((x: any) => x.id)
-    layer_objects.push({ key: hash, revs: rev })
+    // ハッシュを作成してレイヤーのキーとする
+    const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
+    layer_objects.push({ key: layerKey, revs: rev })
   })
 
   all_revisions.value.push({
     hash,
     layer_revs: layer_objects
   })
+
+  renderDagForSelectedLayer()
+}
+
+function hasKey<T>(small: T[], big: T[]) {
+  const b = new Set(big)
+  return small.every((x) => b.has(x))
+}
+
+/**
+ * リビジョンの構成からDAG描画する
+ * - Node: a revision (hash) for the *selected* drawing layer
+ * - Edge: parent -> child, where parent is the "closest" previous snapshot
+ *   whose `revs` is a subset of the child's `revs`.
+ */
+function buildDagDataForLayer(layerIdx: number): DagNodeDatum[] {
+  // 同じキーは1つにまとめる
+  const nodeById = new Map<string, DagNodeDatum>()
+  const orderedIds: string[] = []
+
+  const revisions = all_revisions.value.map((rev, index) => {
+    const layer = rev.layer_revs[layerIdx]
+    return {
+      id: layer?.key ?? rev.hash,
+      revs: (layer?.revs ?? []) as any[],
+      index
+    }
+  })
+
+  for (const Rev of revisions) {
+    if (!nodeById.has(Rev.id)) {
+      nodeById.set(Rev.id, {
+        id: Rev.id,
+        parentIds: [],
+        revs: Rev.revs,
+        index: Rev.index
+      })
+      orderedIds.push(Rev.id)
+    }
+  }
+
+  // 最新のノードから親の候補を探して接続していく
+  for (let i = 0; i < revisions.length; i++) {
+    const curRev = revisions[i]
+    const curNode = nodeById.get(curRev.id)!
+
+    let bestParentRev: (typeof revisions)[number] | undefined
+    for (let j = 0; j < i; j++) {
+      const candRev = revisions[j]
+      if (candRev.id === curRev.id) continue
+      if (candRev.revs.length === curRev.revs.length) continue
+      if (!hasKey(candRev.revs, curRev.revs)) continue
+
+      if (!bestParentRev) {
+        bestParentRev = candRev
+        continue
+      }
+
+      if (
+        candRev.revs.length > bestParentRev.revs.length ||
+        (candRev.revs.length === bestParentRev.revs.length && candRev.index > bestParentRev.index)
+      ) {
+        bestParentRev = candRev
+      }
+    }
+
+    if (!bestParentRev && i > 0) bestParentRev = revisions[i - 1]
+
+    if (bestParentRev && bestParentRev.id !== curRev.id) {
+      if (!curNode.parentIds.includes(bestParentRev.id)) curNode.parentIds.push(bestParentRev.id)
+    }
+  }
+
+  return orderedIds.map((id) => nodeById.get(id)!)
+}
+
+function renderDagForSelectedLayer() {
+  const svgEl = document.querySelector<SVGSVGElement>('#dag')
+  if (!svgEl) return
+
+  // 再描画
+  const svg = d3.select(svgEl)
+  svg.selectAll('*').remove()
+
+  const data = buildDagDataForLayer(layer_index.value)
+  if (data.length === 0) return
+
+  const dag = d3dag.dagStratify()(data)
+
+  const nodeWidth = 80
+  const nodeHeight = 44
+  const margin = 10
+
+  const layout = d3dag
+    .sugiyama()
+    .nodeSize(() => [nodeWidth, nodeHeight])
+
+  const { dag: laidOut, width, height } = layout(dag)
+
+  svg
+    .attr('viewBox', `0 0 ${width + margin * 2} ${height + margin * 2}`)
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+
+  const g = svg.append('g').attr('transform', `translate(${margin}, ${margin})`)
+
+  const line = d3
+    .line()
+    .curve(d3.curveCatmullRom)
+    .x((d: any) => d.x)
+    .y((d: any) => d.y)
+
+  g.append('g')
+    .attr('fill', 'none')
+    .attr('stroke', '#999')
+    .attr('stroke-width', 2)
+    .selectAll('path')
+    .data(laidOut.links())
+    .join('path')
+    .attr('d', (link: any) => line(link.points))
+
+  const nodeG = g
+    .append('g')
+    .selectAll('g')
+    .data(laidOut.descendants())
+    .join('g')
+    .attr('transform', (node: any) => `translate(${node.x}, ${node.y})`)
+
+  nodeG
+    .append('rect')
+    .attr('x', -nodeWidth / 2)
+    .attr('y', -nodeHeight / 2)
+    .attr('width', nodeWidth)
+    .attr('height', nodeHeight)
+    .attr('rx', 8)
+    .attr('fill', '#fff')
+    .attr('stroke', '#333')
+
+  nodeG
+    .append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'central')
+    .attr('font-size', 12)
+    .attr('fill', '#111')
+    .text((node: any) => {
+      const short = String(node.id).slice(0, 7)
+      const revCount = node.data?.revs?.length ?? 0
+      return `${short}  (+${revCount})`
+    })
+
+  const layers = new Map<number, number>()
+  for (const n of laidOut.descendants()) {
+    const layer = n.layer
+    const y = n.y
+    if (typeof layer === 'number' && !layers.has(layer)) layers.set(layer, y)
+  }
+  const layerEntries = [...layers.entries()].sort((a, b) => a[0] - b[0])
+  g.append('g')
+    .selectAll('text')
+    .data(layerEntries)
+    .join('text')
+    .attr('x', -8)
+    .attr('y', (d: Array<number>) => d[1])
+    .attr('text-anchor', 'end')
+    .attr('dominant-baseline', 'central')
+    .attr('font-size', 10)
+    .attr('fill', '#666')
+    .text((d: Array<number>) => `L${d[0]}`)
 }
 
 function changeLayerIndex() {
@@ -209,6 +388,13 @@ onMounted(async () => {
 
   easljs.Ticker.timingMode = easljs.Ticker.RAF
   easljs.Ticker.addEventListener('tick', onTick)
+
+  renderDagForSelectedLayer()
+})
+
+// レイヤー切り替えるとDAG再描画
+watch(layer_index, () => {
+  renderDagForSelectedLayer()
 })
 
 onBeforeUnmount(() => {
@@ -261,5 +447,46 @@ onBeforeUnmount(() => {
 canvas {
   position: absolute;
   left: 0;
+}
+
+#work_area {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+#canvas_holder {
+  position: relative;
+  margin: 10px;
+  border: 1px solid #ddd;
+  width: 960px;
+  height: 800px
+}
+
+#dag_div {
+  width: auto;
+  max-width: 200px;
+  height: 800px;
+  margin: 10px;
+  display: flex;
+  align-items: stretch;
+}
+
+#dag {
+  border: 1px solid #ddd;
+  background: #fafafa;
+  width: 100%;
+  height: 100%;
+}
+
+.revisions_header {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.operation_hint {
+  color: #666;
 }
 </style>
