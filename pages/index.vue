@@ -184,7 +184,8 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
-  const mod = await import('@createjs/easeljs/dist/easeljs.cjs')
+  // Import on client only (EaselJS depends on DOM APIs)
+  const mod = await import('@createjs/easeljs')
   easljs = (mod as any).default ?? mod
 
   stage.value = new easljs.Stage('drawingCanvas')
