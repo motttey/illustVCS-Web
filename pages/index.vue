@@ -67,6 +67,8 @@ type Revision = {
 }
 
 const layer_index = ref(0)
+const head_hash = ref(Array<string>())
+
 const stage: any = ref(null)
 const stage_layer: any = ref(null)
 const all_stage_layers = ref<Layer[]>([])
@@ -165,6 +167,7 @@ function saveRevision() {
     // ハッシュを作成してレイヤーのキーとする
     const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
     layer_objects.push({ key: layerKey, revs: rev })
+    head_hash.value[layer.index] = layerKey
   })
 
   all_revisions.value.push({
@@ -306,7 +309,10 @@ function renderDagForSelectedLayer() {
     .attr('height', nodeHeight)
     .attr('rx', 8)
     .attr('fill', '#fff')
-    .attr('stroke', '#333')
+    .attr('stroke', (node: any) => {
+      return head_hash.value[layer_index.value] === node.id ? '#ff6600' : '#333'
+    })
+    .attr('stroke-width', 1)
 
   nodeG
     .append('text')
@@ -379,6 +385,7 @@ onMounted(async () => {
       redo_stack: [],
       redo_revs: {}
     })
+    head_hash.value.push('')
   }
 
   stage_layer.value = all_stage_layers.value[layer_index.value].stage_layer
