@@ -323,10 +323,10 @@ function renderDagForSelectedLayer() {
   const { dag: laidOut, width, height } = layout(dag)
 
   svg
-    .attr('viewBox', `0 0 ${width + margin * 2} ${height + margin * 2}`)
+    .attr('viewBox', `${0} ${0} ${width + margin * 2} ${height + margin * 2}`)
     .attr('preserveAspectRatio', 'xMidYMid meet')
 
-  const g = svg.append('g').attr('transform', `translate(${margin}, ${margin})`)
+  const g = svg.append('g').attr('transform', `translate(${margin*2}, ${margin})`)
 
   const line = d3
     .line()
