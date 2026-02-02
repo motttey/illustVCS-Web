@@ -14,8 +14,47 @@
 
       <div id="revisions">
         <div class="revisions_header">
-          <span>Revisions (selected layer: {{ layer_index }})</span>
-          <small class="operation_hint">s: save / r: redo / ctrl: undo / l: change layer</small>
+          <div class="revisions_title">
+            <span>Revisions (selected layer: {{ layer_index }})</span>
+            <small class="operation_hint">s: save / r: redo / ctrl: undo / l: change layer</small>
+          </div>
+
+          <div class="revisions_toolbar btn-group" role="group" aria-label="Operations">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-primary"
+              title="Save (S)"
+              @click="saveRevision"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              title="Undo (Ctrl)"
+              :disabled="!canUndo"
+              @click="handleUndo"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              title="Redo (R)"
+              :disabled="!canRedo"
+              @click="handleRedo"
+            >
+              Redo
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-success"
+              title="Change layer (L)"
+              @click="handleChangeLayer"
+            >
+              Next layer
+            </button>
+          </div>
         </div>
       </div>
 
@@ -46,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import sha256 from 'crypto-js/sha256'
 import * as d3 from "d3";
 import * as d3dag from "d3-dag";
@@ -75,6 +114,16 @@ const all_stage_layers = ref<Layer[]>([])
 const new_shape: any = ref(null)
 const surface_layer_shape: any = ref(null)
 const all_revisions = ref<Revision[]>([])
+
+const canUndo = computed(() => {
+  const layer = all_stage_layers.value[layer_index.value]
+  return (layer?.undo_stack?.length ?? 0) > 0
+})
+
+const canRedo = computed(() => {
+  const layer = all_stage_layers.value[layer_index.value]
+  return (layer?.redo_stack?.length ?? 0) > 0
+})
 
 type DagNodeDatum = {
   id: string
@@ -350,6 +399,11 @@ function changeLayerIndex() {
   layer_index.value = layer_index.value < all_stage_layers.value.length - 1 ? layer_index.value + 1 : 0
 }
 
+function handleChangeLayer() {
+  changeLayerIndex()
+  stage_layer.value = selectLayer()
+}
+
 function onTick() {
   stage.value.update()
   stage_layer.value.update()
@@ -363,8 +417,7 @@ function handleKeydown(event: KeyboardEvent) {
   } else if (event.key === 's') {
     saveRevision()
   } else if (event.key === 'l') {
-    changeLayerIndex()
-    stage_layer.value = selectLayer()
+    handleChangeLayer()
   }
 }
 
@@ -488,9 +541,19 @@ canvas {
 
 .revisions_header {
   display: flex;
-  justify-content: center;
-  gap: 12px;
-  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.revisions_title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.revisions_toolbar {
+  flex: 0 0 auto;
 }
 
 .operation_hint {
