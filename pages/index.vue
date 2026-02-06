@@ -97,6 +97,7 @@ type Layer = {
   undo_stack: string[]
   redo_stack: string[]
   redo_revs: Record<string, any>
+  objectsById: Record<string, any>
   name?: string
 }
 
@@ -180,8 +181,40 @@ function handleDown(event: any) {
   surface_layer_shape.value.name = new_shape.value.id.toString()
   stage_layer.value.addChild(surface_layer_shape.value)
 
+  all_stage_layers.value[layer_index.value].objectsById[String(surface_layer_shape.value.id)] =
+    surface_layer_shape.value
+
   stage.value.addEventListener('stagemousemove', handleMove)
   stage.value.addEventListener('stagemouseup', handleUp)
+}
+
+function checkoutLayerToRevs(layerIdx: number, revIds: any[]) {
+  const layer = all_stage_layers.value[layerIdx]
+  if (!layer) return
+
+  if (stage.value) {
+    stage.value.removeAllChildren()
+    stage.value.update()
+  }
+
+  const targetStage = layer.stage_layer
+  targetStage.removeAllChildren()
+
+  const ids = (revIds ?? []).map((x) => String(x))
+  for (const id of ids) {
+    const obj = layer.objectsById[id]
+    if (obj) {
+      targetStage.addChild(obj)
+    } else {
+      console.warn('checkout: object not found for id', id)
+    }
+  }
+
+  layer.undo_stack = [...ids]
+  layer.redo_stack = []
+  layer.redo_revs = {}
+
+  targetStage.update()
 }
 
 function handleUndo() {
@@ -303,7 +336,6 @@ function renderDagForSelectedLayer() {
   const svgEl = document.querySelector<SVGSVGElement>('#dag')
   if (!svgEl) return
 
-  // 再描画
   const svg = d3.select(svgEl)
   svg.selectAll('*').remove()
 
@@ -349,6 +381,18 @@ function renderDagForSelectedLayer() {
     .data(laidOut.descendants())
     .join('g')
     .attr('transform', (node: any) => `translate(${node.x}, ${node.y})`)
+
+  nodeG
+    .style('cursor', 'pointer')
+    .on('click', (_event: any, node: any) => {
+      const layerIdx = layer_index.value
+      const datum = node?.data as DagNodeDatum | undefined
+      if (!datum) return
+
+      head_hash.value[layerIdx] = datum.id
+      checkoutLayerToRevs(layerIdx, datum.revs)
+      renderDagForSelectedLayer()
+    })
 
   nodeG
     .append('rect')
@@ -436,7 +480,8 @@ onMounted(async () => {
       color: '#000000',
       undo_stack: [],
       redo_stack: [],
-      redo_revs: {}
+      redo_revs: {},
+      objectsById: {}
     })
     head_hash.value.push('')
   }
