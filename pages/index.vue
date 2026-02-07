@@ -54,25 +54,53 @@
             >
               Next layer
             </button>
+
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-info"
+              title="Add layer"
+              @click="addLayer"
+            >
+              Add layer
+            </button>
           </div>
         </div>
       </div>
 
       <div id="layers">
-        <span v-for="(layer, idx) in all_stage_layers" :key="idx" @click="selectLayerOnClick(layer)">
-          <span v-if="idx === layer_index" class="span_selected">
-            レイヤー {{ idx }}
-          </span>
-          <span v-else>
-            レイヤー {{ idx }}
-          </span>
-        </span>
+        <button
+          v-for="(layer, idx) in all_stage_layers"
+          :key="layer.index"
+          type="button"
+          class="layer_card"
+          :class="{ layer_card_selected: idx === layer_index }"
+          @click="selectLayerByIndex(idx)"
+        >
+          <div class="layer_card_label">
+            Layer {{ idx }}
+          </div>
+          <div class="layer_card_preview">
+            <img
+              v-if="head_hash[idx]"
+              :src="getLayerPreviewForLayer(idx)"
+              :alt="`Layer ${idx} preview`"
+            >
+            <div v-else class="layer_card_preview_placeholder">
+              (no revision)
+            </div>
+          </div>
+        </button>
       </div>
 
       <div id="work_area">
         <div id="canvas_holder">
-          <canvas id="layer1" width="960" height="800"></canvas>
-          <canvas id="layer2" width="960" height="800"></canvas>
+          <canvas
+            v-for="(layer, idx) in all_stage_layers"
+            :key="layer.index"
+            :id="`layer${idx + 1}`"
+            width="960"
+            height="800"
+          ></canvas>
           <canvas id="drawingCanvas" width="960" height="800"></canvas>
         </div>
 
@@ -85,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import sha256 from 'crypto-js/sha256'
 import * as d3 from "d3";
 import * as d3dag from "d3-dag";
@@ -116,10 +144,12 @@ const new_shape: any = ref(null)
 const surface_layer_shape: any = ref(null)
 const all_revisions = ref<Revision[]>([])
 
-// DAG thumbnail cache (per layer + revisionId)
 const thumbnailByLayerAndRevisionId = ref<Record<string, string>>({})
+const layerPreviewByLayerAndRevisionId = ref<Record<string, string>>({})
 
 const THUMB_SIZE = 96
+const LAYER_PREVIEW_W = 120
+const LAYER_PREVIEW_H = 100
 
 const canUndo = computed(() => {
   const layer = all_stage_layers.value[layer_index.value]
@@ -140,13 +170,30 @@ type DagNodeDatum = {
 
 let easljs: any
 
-function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Array<string>) {
-  const cacheKey = `${layerIdx}:${revisionId}`
-  const cached = thumbnailByLayerAndRevisionId.value[cacheKey]
-  if (cached) return cached
+function getLatestRevsForLayer(layerIdx: number) {
+  const headId = head_hash.value[layerIdx]
+  if (!headId) return []
 
+  for (let i = all_revisions.value.length - 1; i >= 0; i--) {
+    const rev = all_revisions.value[i]
+    const layer = rev.layer_revs[layerIdx]
+    if (layer?.key === headId) return layer.revs ?? []
+  }
+  return []
+}
+
+function getLayerPreviewForLayer(layerIdx: number) {
+  const headId = head_hash.value[layerIdx]
+  if (!headId) return ''
+  const revs = getLatestRevsForLayer(layerIdx)
+  return getOrCreateLayerPreview(layerIdx, headId, revs) ?? ''
+}
+
+type CacheRef = { value: Record<string, string> }
+
+function renderRevisionToTempCanvas(layerIdx: number, revIds: any[]) {
   const layer = all_stage_layers.value[layerIdx]
-  if (!layer || !easljs) return undefined
+  if (!layer || !easljs || !layer.stage_layer) return undefined
 
   const baseCanvas = layer.stage_layer?.canvas as HTMLCanvasElement | undefined
   const srcW = baseCanvas?.width ?? 960
@@ -161,29 +208,106 @@ function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Arra
   for (const id of ids) {
     const orig = layer.objectsById[id]
     if (!orig) continue
+    // EaselJS display objects can only belong to one parent, so clone
     const cloned = orig.clone?.(true) ?? orig
     tempStage.addChild(cloned)
   }
   tempStage.update()
+  return { tempCanvas, srcW, srcH }
+}
 
-  // 1:1に整形する
-  const thumbCanvas = document.createElement('canvas')
-  thumbCanvas.width = THUMB_SIZE
-  thumbCanvas.height = THUMB_SIZE
-  const ctx = thumbCanvas.getContext('2d')
+function getOrCreateRenderedDataUrl(
+  cacheRef: CacheRef,
+  cacheKey: string,
+  render: () => string | undefined
+) {
+  const cached = cacheRef.value[cacheKey]
+  if (cached) return cached
+  const dataUrl = render()
+  if (!dataUrl) return undefined
+  cacheRef.value[cacheKey] = dataUrl
+  return dataUrl
+}
+
+function toContainDataUrl(
+  srcCanvas: HTMLCanvasElement,
+  srcW: number,
+  srcH: number,
+  destW: number,
+  destH: number
+) {
+  const canvas = document.createElement('canvas')
+  canvas.width = destW
+  canvas.height = destH
+  const ctx = canvas.getContext('2d')
   if (!ctx) return undefined
 
   ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, THUMB_SIZE, THUMB_SIZE)
+  ctx.fillRect(0, 0, destW, destH)
 
-  const side = Math.min(srcW, srcH)
-  const sx = (srcW - side) / 2
-  const sy = (srcH - side) / 2
-  ctx.drawImage(tempCanvas, sx, sy, side, side, 0, 0, THUMB_SIZE, THUMB_SIZE)
+  const scale = Math.min(destW / srcW, destH / srcH)
+  const dw = srcW * scale
+  const dh = srcH * scale
+  const dx = (destW - dw) / 2
+  const dy = (destH - dh) / 2
+  ctx.drawImage(srcCanvas, 0, 0, srcW, srcH, dx, dy, dw, dh)
 
-  const dataUrl = thumbCanvas.toDataURL('image/png')
-  thumbnailByLayerAndRevisionId.value[cacheKey] = dataUrl
-  return dataUrl
+  return canvas.toDataURL('image/png')
+}
+
+function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Array<string>) {
+  const cacheKey = `${layerIdx}:${revisionId}`
+  return getOrCreateRenderedDataUrl(thumbnailByLayerAndRevisionId, cacheKey, () => {
+    const rendered = renderRevisionToTempCanvas(layerIdx, revIds)
+    if (!rendered) return undefined
+    const { tempCanvas, srcW, srcH } = rendered
+
+    // Keep original aspect ratio (contain) inside a square thumbnail
+    return toContainDataUrl(tempCanvas, srcW, srcH, THUMB_SIZE, THUMB_SIZE)
+  })
+}
+
+function getOrCreateLayerPreview(layerIdx: number, revisionId: string, revIds: any[]) {
+  const cacheKey = `${layerIdx}:${revisionId}`
+  return getOrCreateRenderedDataUrl(layerPreviewByLayerAndRevisionId, cacheKey, () => {
+    const rendered = renderRevisionToTempCanvas(layerIdx, revIds)
+    if (!rendered) return undefined
+    const { tempCanvas, srcW, srcH } = rendered
+
+    return toContainDataUrl(tempCanvas, srcW, srcH, LAYER_PREVIEW_W, LAYER_PREVIEW_H)
+  })
+}
+
+async function addLayer() {
+  if (!easljs) return
+  const index = all_stage_layers.value.length
+
+  all_stage_layers.value.push({
+    index,
+    stage_layer: null,
+    color: '#000000',
+    undo_stack: [],
+    redo_stack: [],
+    redo_revs: {},
+    objectsById: {}
+  })
+  head_hash.value.push('')
+
+  await nextTick()
+
+  const canvasId = `layer${index + 1}`
+  const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null
+  if (!canvas) {
+    console.warn('addLayer: canvas not found', canvasId)
+    return
+  }
+
+  all_stage_layers.value[index].stage_layer = new easljs.Stage(canvasId)
+
+  if (all_stage_layers.value.length === 1) {
+    layer_index.value = 0
+    stage_layer.value = selectLayer()
+  }
 }
 
 function setLayerColor() {
@@ -194,12 +318,21 @@ function setLayerColor() {
 }
 
 function selectLayer() {
-  return all_stage_layers.value[layer_index.value].stage_layer
+  return all_stage_layers.value[layer_index.value]?.stage_layer
 }
 
-function selectLayerOnClick(layer: Layer) {
-  layer_index.value = all_stage_layers.value.indexOf(layer)
+function selectLayerByIndex(idx: number) {
+  layer_index.value = idx
   stage_layer.value = selectLayer()
+}
+
+function scheduleDagRender() {
+  const cb = () => renderDagForSelectedLayer()
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    ;(window as any).requestIdleCallback(cb, { timeout: 200 })
+  } else {
+    setTimeout(cb, 0)
+  }
 }
 
 function handleMove(event: any) {
@@ -241,7 +374,7 @@ function handleDown(event: any) {
 
 function checkoutLayerToRevs(layerIdx: number, revIds: any[]) {
   const layer = all_stage_layers.value[layerIdx]
-  if (!layer) return
+  if (!layer?.stage_layer) return
 
   if (stage.value) {
     stage.value.removeAllChildren()
@@ -296,7 +429,7 @@ function saveRevision() {
   const layer_objects: Array<{ key: string; revs: any[] }> = []
 
   all_stage_layers.value.forEach((layer) => {
-    const rev = layer.stage_layer.children.map((x: any) => x.id)
+    const rev = layer.stage_layer?.children?.map((x: any) => x.id) ?? []
     // ハッシュを作成してレイヤーのキーとする
     const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
     layer_objects.push({ key: layerKey, revs: rev })
@@ -308,7 +441,7 @@ function saveRevision() {
     layer_revs: layer_objects
   })
 
-  renderDagForSelectedLayer()
+  scheduleDagRender()
 }
 
 function hasKey<T>(small: T[], big: T[]) {
@@ -452,7 +585,7 @@ function renderDagForSelectedLayer() {
     .attr('y', -nodeHeight / 2)
     .attr('width', nodeWidth)
     .attr('height', nodeHeight)
-    .attr('preserveAspectRatio', 'xMidYMid slice')
+    .attr('preserveAspectRatio', 'xMidYMid meet')
     // Some browsers still require xlink:href
     .attr('href', (node: any) => {
       const datum = node?.data as DagNodeDatum
@@ -527,8 +660,8 @@ function handleChangeLayer() {
 }
 
 function onTick() {
-  stage.value.update()
-  stage_layer.value.update()
+  stage.value?.update?.()
+  stage_layer.value?.update?.()
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -544,27 +677,14 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
-  // Import on client only (EaselJS depends on DOM APIs)
   const mod = await import('@createjs/easeljs')
   easljs = (mod as any).default ?? mod
 
   stage.value = new easljs.Stage('drawingCanvas')
 
-  const layer_size = 2
-  for (let index = 0; index < layer_size; index++) {
-    all_stage_layers.value.push({
-      index,
-      stage_layer: new easljs.Stage(`layer${index + 1}`),
-      color: '#000000',
-      undo_stack: [],
-      redo_stack: [],
-      redo_revs: {},
-      objectsById: {}
-    })
-    head_hash.value.push('')
-  }
+  await addLayer()
 
-  stage_layer.value = all_stage_layers.value[layer_index.value].stage_layer
+  stage_layer.value = selectLayer()
 
   stage.value.addEventListener('stagemousedown', handleDown)
   document.addEventListener('keydown', handleKeydown, false)
@@ -572,12 +692,12 @@ onMounted(async () => {
   easljs.Ticker.timingMode = easljs.Ticker.RAF
   easljs.Ticker.addEventListener('tick', onTick)
 
-  renderDagForSelectedLayer()
+  scheduleDagRender()
 })
 
 // レイヤー切り替えるとDAG再描画
 watch(layer_index, () => {
-  renderDagForSelectedLayer()
+  scheduleDagRender()
 })
 
 onBeforeUnmount(() => {
@@ -660,6 +780,64 @@ canvas {
   background: #fafafa;
   width: 100%;
   height: 100%;
+}
+
+#layers {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.layer_card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #ddd;
+  background: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.layer_card:focus {
+  outline: none;
+}
+
+.layer_card_selected {
+  border-color: #0d6efd;
+  box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.35);
+}
+
+.layer_card_label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+}
+
+.layer_card_preview {
+  width: 120px;
+  height: 100px;
+  border: 1px solid #eee;
+  background: #fafafa;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.layer_card_preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.layer_card_preview_placeholder {
+  font-size: 11px;
+  color: #888;
 }
 
 .revisions_header {
