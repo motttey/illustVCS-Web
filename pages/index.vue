@@ -116,6 +116,11 @@ const new_shape: any = ref(null)
 const surface_layer_shape: any = ref(null)
 const all_revisions = ref<Revision[]>([])
 
+// DAG thumbnail cache (per layer + revisionId)
+const thumbnailByLayerAndRevisionId = ref<Record<string, string>>({})
+
+const THUMB_SIZE = 96
+
 const canUndo = computed(() => {
   const layer = all_stage_layers.value[layer_index.value]
   return (layer?.undo_stack?.length ?? 0) > 0
@@ -134,6 +139,52 @@ type DagNodeDatum = {
 }
 
 let easljs: any
+
+function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Array<string>) {
+  const cacheKey = `${layerIdx}:${revisionId}`
+  const cached = thumbnailByLayerAndRevisionId.value[cacheKey]
+  if (cached) return cached
+
+  const layer = all_stage_layers.value[layerIdx]
+  if (!layer || !easljs) return undefined
+
+  const baseCanvas = layer.stage_layer?.canvas as HTMLCanvasElement | undefined
+  const srcW = baseCanvas?.width ?? 960
+  const srcH = baseCanvas?.height ?? 800
+
+  const tempCanvas = document.createElement('canvas')
+  tempCanvas.width = srcW
+  tempCanvas.height = srcH
+  const tempStage = new easljs.Stage(tempCanvas)
+
+  const ids = (revIds ?? []).map((x) => String(x))
+  for (const id of ids) {
+    const orig = layer.objectsById[id]
+    if (!orig) continue
+    const cloned = orig.clone?.(true) ?? orig
+    tempStage.addChild(cloned)
+  }
+  tempStage.update()
+
+  // 1:1に整形する
+  const thumbCanvas = document.createElement('canvas')
+  thumbCanvas.width = THUMB_SIZE
+  thumbCanvas.height = THUMB_SIZE
+  const ctx = thumbCanvas.getContext('2d')
+  if (!ctx) return undefined
+
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, THUMB_SIZE, THUMB_SIZE)
+
+  const side = Math.min(srcW, srcH)
+  const sx = (srcW - side) / 2
+  const sy = (srcH - side) / 2
+  ctx.drawImage(tempCanvas, sx, sy, side, side, 0, 0, THUMB_SIZE, THUMB_SIZE)
+
+  const dataUrl = thumbCanvas.toDataURL('image/png')
+  thumbnailByLayerAndRevisionId.value[cacheKey] = dataUrl
+  return dataUrl
+}
 
 function setLayerColor() {
   const el = document.querySelector<HTMLInputElement>('#inputColor')
@@ -344,8 +395,8 @@ function renderDagForSelectedLayer() {
 
   const dag = d3dag.dagStratify()(data)
 
-  const nodeWidth = 80
-  const nodeHeight = 44
+  const nodeWidth = THUMB_SIZE
+  const nodeHeight = THUMB_SIZE
   const margin = 10
 
   const layout = d3dag
@@ -394,30 +445,57 @@ function renderDagForSelectedLayer() {
       renderDagForSelectedLayer()
     })
 
+  // Thumbnail image
+  nodeG
+    .append('image')
+    .attr('x', -nodeWidth / 2)
+    .attr('y', -nodeHeight / 2)
+    .attr('width', nodeWidth)
+    .attr('height', nodeHeight)
+    .attr('preserveAspectRatio', 'xMidYMid slice')
+    // Some browsers still require xlink:href
+    .attr('href', (node: any) => {
+      const datum = node?.data as DagNodeDatum
+      return getOrCreateThumbnail(layer_index.value, String(datum.id), datum.revs) ?? ''
+    })
+    .attr('xlink:href', (node: any) => {
+      const datum = node?.data as DagNodeDatum
+      return getOrCreateThumbnail(layer_index.value, String(datum.id), datum.revs) ?? ''
+    })
+
+  const overlayHeight = 20
+  nodeG
+    .append('rect')
+    .attr('x', -nodeWidth / 2)
+    .attr('y', -nodeHeight / 2)
+    .attr('width', nodeWidth)
+    .attr('height', overlayHeight)
+    .attr('rx', 4)
+    .attr('fill', 'rgba(0,0,0,0.35)')
+
+  nodeG
+    .append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'central')
+    .attr('font-size', 11)
+    .attr('font-weight', 600)
+    .attr('fill', '#fff')
+    .attr('x', 0)
+    .attr('y', -nodeHeight / 2 + overlayHeight / 2)
+    .text((node: any) => String(node.id).slice(0, 7))
+
   nodeG
     .append('rect')
     .attr('x', -nodeWidth / 2)
     .attr('y', -nodeHeight / 2)
     .attr('width', nodeWidth)
     .attr('height', nodeHeight)
-    .attr('rx', 8)
-    .attr('fill', '#fff')
+    .attr('rx', 4)
+    .attr('fill', 'none')
     .attr('stroke', (node: any) => {
       return head_hash.value[layer_index.value] === node.id ? '#ff6600' : '#333'
     })
-    .attr('stroke-width', 1)
-
-  nodeG
-    .append('text')
-    .attr('text-anchor', 'middle')
-    .attr('dominant-baseline', 'central')
-    .attr('font-size', 12)
-    .attr('fill', '#111')
-    .text((node: any) => {
-      const short = String(node.id).slice(0, 7)
-      const revCount = node.data?.revs?.length ?? 0
-      return `${short}  (+${revCount})`
-    })
+    .attr('stroke-width', 1.5)
 
   const layers = new Map<number, number>()
   for (const n of laidOut.descendants()) {
