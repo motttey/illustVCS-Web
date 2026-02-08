@@ -118,30 +118,25 @@ import sha256 from 'crypto-js/sha256'
 import * as d3 from "d3";
 import * as d3dag from "d3-dag";
 
-type Layer = {
-  index: number
-  stage_layer: any
-  color: string
-  undo_stack: string[]
-  redo_stack: string[]
-  redo_revs: Record<string, any>
-  objectsById: Record<string, any>
-  name?: string
-}
-
-type Revision = {
-  hash: string
-  layer_revs: Array<{ key: string; revs: any[] }>
-}
+import type {
+  CacheRef,
+  DagNodeDatum,
+  EaselMouseEventLike,
+  EaselShapeLike,
+  EaselStageLike,
+  Layer,
+  ObjectId,
+  Revision
+} from '~/types/pages-index'
 
 const layer_index = ref(0)
 const head_hash = ref(Array<string>())
 
-const stage: any = ref(null)
-const stage_layer: any = ref(null)
+const stage = ref<EaselStageLike | null>(null)
+const stage_layer = ref<EaselStageLike | null>(null)
 const all_stage_layers = ref<Layer[]>([])
-const new_shape: any = ref(null)
-const surface_layer_shape: any = ref(null)
+const new_shape = ref<EaselShapeLike | null>(null)
+const surface_layer_shape = ref<EaselShapeLike | null>(null)
 const all_revisions = ref<Revision[]>([])
 
 const thumbnailByLayerAndRevisionId = ref<Record<string, string>>({})
@@ -161,16 +156,10 @@ const canRedo = computed(() => {
   return (layer?.redo_stack?.length ?? 0) > 0
 })
 
-type DagNodeDatum = {
-  id: string
-  parentIds: string[]
-  revs: any[]
-  index: number
-}
-
+// EaselJS: 別ライブラリに置換するかもなのでpseudo typing
 let easljs: any
 
-function getLatestRevsForLayer(layerIdx: number) {
+function getLatestRevsForLayer(layerIdx: number): ObjectId[] {
   const headId = head_hash.value[layerIdx]
   if (!headId) return []
 
@@ -182,6 +171,16 @@ function getLatestRevsForLayer(layerIdx: number) {
   return []
 }
 
+function getRevsForLayerKey(layerIdx: number, layerKey: string): ObjectId[] {
+  if (!layerKey) return []
+  for (let i = all_revisions.value.length - 1; i >= 0; i--) {
+    const rev = all_revisions.value[i]
+    const layer = rev.layer_revs[layerIdx]
+    if (layer?.key === layerKey) return (layer.revs ?? []) as ObjectId[]
+  }
+  return []
+}
+
 function getLayerPreviewForLayer(layerIdx: number) {
   const headId = head_hash.value[layerIdx]
   if (!headId) return ''
@@ -189,9 +188,7 @@ function getLayerPreviewForLayer(layerIdx: number) {
   return getOrCreateLayerPreview(layerIdx, headId, revs) ?? ''
 }
 
-type CacheRef = { value: Record<string, string> }
-
-function renderRevisionToTempCanvas(layerIdx: number, revIds: any[]) {
+function renderRevisionToTempCanvas(layerIdx: number, revIds: ObjectId[]) {
   const layer = all_stage_layers.value[layerIdx]
   if (!layer || !easljs || !layer.stage_layer) return undefined
 
@@ -202,14 +199,20 @@ function renderRevisionToTempCanvas(layerIdx: number, revIds: any[]) {
   const tempCanvas = document.createElement('canvas')
   tempCanvas.width = srcW
   tempCanvas.height = srcH
-  const tempStage = new easljs.Stage(tempCanvas)
+  const tempStage = new easljs.Stage(tempCanvas) as EaselStageLike
 
   const ids = (revIds ?? []).map((x) => String(x))
   for (const id of ids) {
     const orig = layer.objectsById[id]
     if (!orig) continue
-    // EaselJS display objects can only belong to one parent, so clone
-    const cloned = orig.clone?.(true) ?? orig
+    // EaselJS display objects can only belong to one parent.
+    // IMPORTANT: never add the original object to the temp stage, otherwise it
+    // will be detached from the real layer stage and break checkout/undo/redo.
+    const cloned = typeof orig.clone === 'function' ? orig.clone(true) : undefined
+    if (!cloned) {
+      console.warn('renderRevisionToTempCanvas: object is not cloneable, skip', id)
+      continue
+    }
     tempStage.addChild(cloned)
   }
   tempStage.update()
@@ -255,7 +258,7 @@ function toContainDataUrl(
   return canvas.toDataURL('image/png')
 }
 
-function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Array<string>) {
+function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Array<ObjectId>) {
   const cacheKey = `${layerIdx}:${revisionId}`
   return getOrCreateRenderedDataUrl(thumbnailByLayerAndRevisionId, cacheKey, () => {
     const rendered = renderRevisionToTempCanvas(layerIdx, revIds)
@@ -267,7 +270,7 @@ function getOrCreateThumbnail(layerIdx: number, revisionId: string, revIds: Arra
   })
 }
 
-function getOrCreateLayerPreview(layerIdx: number, revisionId: string, revIds: any[]) {
+function getOrCreateLayerPreview(layerIdx: number, revisionId: string, revIds: ObjectId[]) {
   const cacheKey = `${layerIdx}:${revisionId}`
   return getOrCreateRenderedDataUrl(layerPreviewByLayerAndRevisionId, cacheKey, () => {
     const rendered = renderRevisionToTempCanvas(layerIdx, revIds)
@@ -302,7 +305,7 @@ async function addLayer() {
     return
   }
 
-  all_stage_layers.value[index].stage_layer = new easljs.Stage(canvasId)
+  all_stage_layers.value[index].stage_layer = new easljs.Stage(canvasId) as EaselStageLike
 
   if (all_stage_layers.value.length === 1) {
     layer_index.value = 0
@@ -329,50 +332,76 @@ function selectLayerByIndex(idx: number) {
 function scheduleDagRender() {
   const cb = () => renderDagForSelectedLayer()
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-    ;(window as any).requestIdleCallback(cb, { timeout: 200 })
+    ;window.requestIdleCallback(cb, { timeout: 200 })
   } else {
     setTimeout(cb, 0)
   }
 }
 
-function handleMove(event: any) {
+function handleMove(event: EaselMouseEventLike) {
+  if (!new_shape.value) return
   new_shape.value.graphics.lineTo(event.stageX, event.stageY)
 }
 
-function handleUp(event: any) {
+// EaselJS `Stage.add/removeEventListener` is typed in this project as
+// `(...args: unknown[]) => void` (see `types/pages-index.d.ts`).
+//
+// TypeScript function parameter variance means we can't pass a strongly-typed
+// `(event: EaselMouseEventLike) => void` directly. So we register thin wrapper
+// listeners that accept `unknown[]` and cast the first arg.
+const handleMoveListener = (...args: unknown[]) => {
+  handleMove(args[0] as EaselMouseEventLike)
+}
+
+function handleUp(event: EaselMouseEventLike) {
+  if (!new_shape.value || !surface_layer_shape.value) return
+
   new_shape.value.graphics.lineTo(event.stageX, event.stageY)
   new_shape.value.graphics.endStroke()
 
-  stage.value.removeEventListener('stagemousemove', handleMove)
-  stage.value.removeEventListener('stagemouseup', handleUp)
+  stage.value?.removeEventListener('stagemousemove', handleMoveListener)
+  stage.value?.removeEventListener('stagemouseup', handleUpListener)
+  stage.value?.update()
+  stage_layer.value?.update()
 
-  stage.value.update()
-  stage_layer.value.update()
+  // If we draw a new stroke after undoing, redo history becomes invalid.
+  all_stage_layers.value[layer_index.value].redo_stack = []
+  all_stage_layers.value[layer_index.value].redo_revs = {}
 
-  all_stage_layers.value[layer_index.value].undo_stack.push(surface_layer_shape.value.name)
+  all_stage_layers.value[layer_index.value].undo_stack.push(
+    String(surface_layer_shape.value.name ?? surface_layer_shape.value.id)
+  )
 }
 
-function handleDown(event: any) {
-  new_shape.value = new easljs.Shape()
-  new_shape.value.name = new_shape.value.id.toString()
+const handleUpListener = (...args: unknown[]) => {
+  handleUp(args[0] as EaselMouseEventLike)
+}
+
+function handleDown(event: EaselMouseEventLike) {
+  new_shape.value = new easljs.Shape() as EaselShapeLike
+  new_shape.value.name = String(new_shape.value.id)
 
   new_shape.value.graphics.beginStroke('black')
   new_shape.value.graphics.moveTo(event.stageX, event.stageY)
-  stage.value.addChild(new_shape.value)
+  stage.value?.addChild(new_shape.value)
 
   surface_layer_shape.value = new_shape.value
   surface_layer_shape.value.graphics.beginStroke(setLayerColor())
-  surface_layer_shape.value.name = new_shape.value.id.toString()
-  stage_layer.value.addChild(surface_layer_shape.value)
+  surface_layer_shape.value.name = String(surface_layer_shape.value.id)
+  stage_layer.value?.addChild(surface_layer_shape.value)
 
   all_stage_layers.value[layer_index.value].objectsById[String(surface_layer_shape.value.id)] =
     surface_layer_shape.value
 
-  stage.value.addEventListener('stagemousemove', handleMove)
-  stage.value.addEventListener('stagemouseup', handleUp)
+  stage.value?.addEventListener('stagemousemove', handleMoveListener)
+  stage.value?.addEventListener('stagemouseup', handleUpListener)
 }
 
-function checkoutLayerToRevs(layerIdx: number, revIds: any[]) {
+const handleDownListener = (...args: unknown[]) => {
+  handleDown(args[0] as EaselMouseEventLike)
+}
+
+function checkoutLayerToRevs(layerIdx: number, revIds: ObjectId[]) {
   const layer = all_stage_layers.value[layerIdx]
   if (!layer?.stage_layer) return
 
@@ -405,10 +434,11 @@ function handleUndo() {
   if (all_stage_layers.value[layer_index.value].undo_stack.length === 0) return
   const name = all_stage_layers.value[layer_index.value].undo_stack.pop()!
   all_stage_layers.value[layer_index.value].redo_stack.push(name)
-  all_stage_layers.value[layer_index.value].redo_revs[name] = stage_layer.value.getChildByName(name)
+  const found = stage_layer.value?.getChildByName(name) ?? undefined
+  all_stage_layers.value[layer_index.value].redo_revs[name] = found
 
-  stage_layer.value.removeChild(stage_layer.value.getChildByName(name))
-  stage_layer.value.update()
+  if (found) stage_layer.value?.removeChild(found)
+  stage_layer.value?.update()
 }
 
 function handleRedo() {
@@ -418,18 +448,20 @@ function handleRedo() {
 
   const found = all_stage_layers.value[layer_index.value].redo_revs[name]
   if (!found) console.log('revision not found')
-  else stage_layer.value.addChild(found)
+  else stage_layer.value?.addChild(found)
 
   delete all_stage_layers.value[layer_index.value].redo_revs[name]
-  stage_layer.value.update()
+  stage_layer.value?.update()
 }
 
 function saveRevision() {
   const hash = sha256(new Date().toString()).toString()
-  const layer_objects: Array<{ key: string; revs: any[] }> = []
+  const layer_objects: Array<{ key: string; revs: ObjectId[] }> = []
 
   all_stage_layers.value.forEach((layer) => {
-    const rev = layer.stage_layer?.children?.map((x: any) => x.id) ?? []
+    // NOTE: children order affects z-order, so we keep the current order when
+    // computing the revision key.
+    const rev = (layer.stage_layer?.children?.map((x) => String(x.id)) ?? []) as ObjectId[]
     // ハッシュを作成してレイヤーのキーとする
     const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
     layer_objects.push({ key: layerKey, revs: rev })
@@ -460,17 +492,26 @@ function buildDagDataForLayer(layerIdx: number): DagNodeDatum[] {
   const nodeById = new Map<string, DagNodeDatum>()
   const orderedIds: string[] = []
 
-  const revisions = all_revisions.value.map((rev, index) => {
-    const layer = rev.layer_revs[layerIdx]
-    return {
-      id: layer?.key ?? rev.hash,
-      revs: (layer?.revs ?? []) as any[],
-      index
-    }
-  })
+  // IMPORTANT:
+  // If a layer was created later, older revisions don't contain data for that
+  // layer. In that case we should *not* fabricate nodes using `rev.hash`,
+  // otherwise the new layer will incorrectly show the same number of nodes as
+  // other layers.
+  const revisions = all_revisions.value
+    .map((rev, index) => {
+      const layer = rev.layer_revs[layerIdx]
+      if (!layer?.key) return undefined
+      return {
+        id: layer.key,
+        revs: (layer.revs ?? []) as ObjectId[],
+        index
+      }
+    })
+    .filter((x): x is { id: string; revs: ObjectId[]; index: number } => Boolean(x))
 
   for (const Rev of revisions) {
-    if (!nodeById.has(Rev.id)) {
+    const existing = nodeById.get(Rev.id)
+    if (!existing) {
       nodeById.set(Rev.id, {
         id: Rev.id,
         parentIds: [],
@@ -478,38 +519,48 @@ function buildDagDataForLayer(layerIdx: number): DagNodeDatum[] {
         index: Rev.index
       })
       orderedIds.push(Rev.id)
+    } else {
+      // Keep the latest revs/index for checkout, but don't add a new node.
+      existing.revs = Rev.revs
+      existing.index = Rev.index
     }
   }
 
-  // 最新のノードから親の候補を探して接続していく
-  for (let i = 0; i < revisions.length; i++) {
-    const curRev = revisions[i]
-    const curNode = nodeById.get(curRev.id)!
+  // Build edges using *unique nodes only*.
+  // If we build edges from the raw revision list, then revisiting the same
+  // snapshot id later can create back-edges and cycles, which breaks d3-dag.
+  for (const id of orderedIds) {
+    nodeById.get(id)!.parentIds = []
+  }
 
-    let bestParentRev: (typeof revisions)[number] | undefined
+  for (let i = 0; i < orderedIds.length; i++) {
+    const curId = orderedIds[i]
+    const curNode = nodeById.get(curId)!
+
+    let bestParent: DagNodeDatum | undefined
     for (let j = 0; j < i; j++) {
-      const candRev = revisions[j]
-      if (candRev.id === curRev.id) continue
-      if (candRev.revs.length === curRev.revs.length) continue
-      if (!hasKey(candRev.revs, curRev.revs)) continue
+      const candId = orderedIds[j]
+      const candNode = nodeById.get(candId)!
+      if (candNode.revs.length === curNode.revs.length) continue
+      if (!hasKey(candNode.revs, curNode.revs)) continue
 
-      if (!bestParentRev) {
-        bestParentRev = candRev
+      if (!bestParent) {
+        bestParent = candNode
         continue
       }
 
       if (
-        candRev.revs.length > bestParentRev.revs.length ||
-        (candRev.revs.length === bestParentRev.revs.length && candRev.index > bestParentRev.index)
+        candNode.revs.length > bestParent.revs.length ||
+        (candNode.revs.length === bestParent.revs.length && candNode.index > bestParent.index)
       ) {
-        bestParentRev = candRev
+        bestParent = candNode
       }
     }
 
-    if (!bestParentRev && i > 0) bestParentRev = revisions[i - 1]
+    if (!bestParent && i > 0) bestParent = nodeById.get(orderedIds[i - 1])
 
-    if (bestParentRev && bestParentRev.id !== curRev.id) {
-      if (!curNode.parentIds.includes(bestParentRev.id)) curNode.parentIds.push(bestParentRev.id)
+    if (bestParent && bestParent.id !== curNode.id) {
+      curNode.parentIds.push(bestParent.id)
     }
   }
 
@@ -526,7 +577,13 @@ function renderDagForSelectedLayer() {
   const data = buildDagDataForLayer(layer_index.value)
   if (data.length === 0) return
 
-  const dag = d3dag.dagStratify()(data)
+  let dag: any
+  try {
+    dag = d3dag.dagStratify()(data)
+  } catch (e) {
+    console.error('renderDagForSelectedLayer: failed to build DAG', e, data)
+    return
+  }
 
   const nodeWidth = THUMB_SIZE
   const nodeHeight = THUMB_SIZE
@@ -574,11 +631,13 @@ function renderDagForSelectedLayer() {
       if (!datum) return
 
       head_hash.value[layerIdx] = datum.id
-      checkoutLayerToRevs(layerIdx, datum.revs)
+      // Derive revs from the revision store to avoid any mismatch between the
+      // DAG datum and the latest stored revision content.
+      const revs = getRevsForLayerKey(layerIdx, datum.id)
+      checkoutLayerToRevs(layerIdx, revs)
       renderDagForSelectedLayer()
     })
 
-  // Thumbnail image
   nodeG
     .append('image')
     .attr('x', -nodeWidth / 2)
@@ -678,15 +737,15 @@ function handleKeydown(event: KeyboardEvent) {
 
 onMounted(async () => {
   const mod = await import('@createjs/easeljs')
-  easljs = (mod as any).default ?? mod
+  easljs = mod
 
-  stage.value = new easljs.Stage('drawingCanvas')
+  stage.value = new easljs.Stage('drawingCanvas') as EaselStageLike
 
   await addLayer()
 
   stage_layer.value = selectLayer()
 
-  stage.value.addEventListener('stagemousedown', handleDown)
+  stage.value.addEventListener('stagemousedown', handleDownListener)
   document.addEventListener('keydown', handleKeydown, false)
 
   easljs.Ticker.timingMode = easljs.Ticker.RAF
@@ -702,9 +761,9 @@ watch(layer_index, () => {
 
 onBeforeUnmount(() => {
   if (stage.value) {
-    stage.value.removeEventListener('stagemousedown', handleDown)
-    stage.value.removeEventListener('stagemousemove', handleMove)
-    stage.value.removeEventListener('stagemouseup', handleUp)
+    stage.value.removeEventListener('stagemousedown', handleDownListener)
+    stage.value.removeEventListener('stagemousemove', handleMoveListener)
+    stage.value.removeEventListener('stagemouseup', handleUpListener)
   }
   document.removeEventListener('keydown', handleKeydown, false)
   if (easljs?.Ticker) easljs.Ticker.removeEventListener('tick', onTick)
