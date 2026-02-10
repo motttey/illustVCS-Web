@@ -568,6 +568,7 @@ function buildDagDataForLayer(layerIdx: number): DagNodeDatum[] {
 }
 
 function renderDagForSelectedLayer() {
+  const containerEl = document.querySelector<HTMLDivElement>('#dag_div')
   const svgEl = document.querySelector<SVGSVGElement>('#dag')
   if (!svgEl) return
 
@@ -595,11 +596,16 @@ function renderDagForSelectedLayer() {
 
   const { dag: laidOut, width, height } = layout(dag)
 
-  svg
-    .attr('viewBox', `${0} ${0} ${width + margin * 2} ${height + margin * 2}`)
-    .attr('preserveAspectRatio', 'xMidYMid meet')
+  // NOTE:
+  // Previously we relied on `viewBox` + CSS `width/height: 100%`, which causes
+  // the whole graph to scale down when it becomes larger than the container.
+  // That makes each node thumbnail smaller and hard to see.
+  //
+  // To keep node size readable, we will instead *grow the SVG itself* to the
+  // required pixel size (and let the container scroll).
+  // We'll compute the final required size after all elements are rendered.
 
-  const g = svg.append('g').attr('transform', `translate(${margin*2}, ${margin})`)
+  const g = svg.append('g').attr('transform', `translate(${margin * 2}, ${margin})`)
 
   const line = d3
     .line()
@@ -707,6 +713,35 @@ function renderDagForSelectedLayer() {
     .attr('font-size', 10)
     .attr('fill', '#666')
     .text((d: Array<number>) => `L${d[0]}`)
+
+  const gNode = g.node()
+  if (!gNode) return
+
+  let bbox: DOMRect
+  try {
+    bbox = gNode.getBBox()
+  } catch (e) {
+    console.warn('renderDagForSelectedLayer: getBBox failed, fallback to layout size', e)
+    bbox = new DOMRect(0, 0, width + margin * 4, height + margin * 2)
+  }
+  const pad = margin * 2
+
+  const minW = containerEl?.clientWidth ?? 360
+  const minH = containerEl?.clientHeight ?? 800
+
+  const contentW = Math.ceil(bbox.width + pad * 2)
+  const contentH = Math.ceil(bbox.height + pad * 2)
+  const svgW = Math.max(minW, contentW)
+  const svgH = Math.max(minH, contentH)
+
+  const vbX = Math.floor(bbox.x - pad)
+  const vbY = Math.floor(bbox.y - pad)
+
+  svg
+    .attr('width', svgW)
+    .attr('height', svgH)
+    .attr('viewBox', `${vbX} ${vbY} ${svgW} ${svgH}`)
+    .attr('preserveAspectRatio', 'xMinYMin meet')
 }
 
 function changeLayerIndex() {
@@ -825,19 +860,20 @@ canvas {
 }
 
 #dag_div {
+  /* Allow scrolling when the DAG becomes larger than the allocated area. */
   width: auto;
-  max-width: 200px;
   height: 800px;
   margin: 10px;
   display: flex;
   align-items: stretch;
+  overflow: auto;
 }
 
 #dag {
   border: 1px solid #ddd;
   background: #fafafa;
-  width: 100%;
-  height: 100%;
+  /* Sized dynamically via JS (width/height attributes). */
+  display: block;
 }
 
 #layers {
