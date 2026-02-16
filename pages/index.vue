@@ -588,11 +588,16 @@ function renderDagForSelectedLayer() {
 
   const nodeWidth = THUMB_SIZE
   const nodeHeight = THUMB_SIZE
+  // Layout spacing between nodes (in addition to node visual size)
+  const nodeGapX = 24
+  const nodeGapY = 28
   const margin = 10
 
   const layout = d3dag
     .sugiyama()
-    .nodeSize(() => [nodeWidth, nodeHeight])
+    // nodeSize controls the distance between node centers.
+    // Add a small gap to avoid nodes/edges feeling cramped.
+    .nodeSize(() => [nodeWidth + nodeGapX, nodeHeight + nodeGapY])
 
   const { dag: laidOut, width, height } = layout(dag)
 
@@ -609,7 +614,8 @@ function renderDagForSelectedLayer() {
 
   const line = d3
     .line()
-    .curve(d3.curveCatmullRom)
+    // Use straight lines (no spline smoothing)
+    .curve(d3.curveLinear)
     .x((d: any) => d.x)
     .y((d: any) => d.y)
 
@@ -622,12 +628,23 @@ function renderDagForSelectedLayer() {
     .join('path')
     .attr('d', (link: any) => line(link.points))
 
+  const hasChild = new Set<string>()
+  for (const l of laidOut.links()) {
+    const src = (l as any)?.source
+    if (src?.id) hasChild.add(String(src.id))
+  }
+  const isLeaf = (node: any) => !hasChild.has(String(node?.id))
+  const baseScaleForNode = (node: any) => (isLeaf(node) ? 1 : 0.75)
+
   const nodeG = g
     .append('g')
     .selectAll('g')
     .data(laidOut.descendants())
     .join('g')
-    .attr('transform', (node: any) => `translate(${node.x}, ${node.y})`)
+    .attr('transform', (node: any) => {
+      const s = baseScaleForNode(node)
+      return `translate(${node.x}, ${node.y}) scale(${s})`
+    })
 
   nodeG
     .style('cursor', 'pointer')
@@ -642,6 +659,22 @@ function renderDagForSelectedLayer() {
       const revs = getRevsForLayerKey(layerIdx, datum.id)
       checkoutLayerToRevs(layerIdx, revs)
       renderDagForSelectedLayer()
+    })
+    .on('mouseenter', (_event: any, node: any) => {
+      if (isLeaf(node)) return
+      d3.select(_event.currentTarget)
+        .interrupt()
+        .transition()
+        .duration(120)
+        .attr('transform', `translate(${node.x}, ${node.y}) scale(1)`)
+    })
+    .on('mouseleave', (_event: any, node: any) => {
+      if (isLeaf(node)) return
+      d3.select(_event.currentTarget)
+        .interrupt()
+        .transition()
+        .duration(120)
+        .attr('transform', `translate(${node.x}, ${node.y}) scale(0.75)`)
     })
 
   nodeG
