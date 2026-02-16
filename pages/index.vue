@@ -628,23 +628,28 @@ function renderDagForSelectedLayer() {
     .join('path')
     .attr('d', (link: any) => line(link.points))
 
+  const nodeId = (node: any) => String(node?.id ?? '')
+  const currentHeadId = () => head_hash.value[layer_index.value] ?? ''
+
   const hasChild = new Set<string>()
   for (const l of laidOut.links()) {
     const src = (l as any)?.source
-    if (src?.id) hasChild.add(String(src.id))
+    const id = nodeId(src)
+    if (id) hasChild.add(id)
   }
-  const isLeaf = (node: any) => !hasChild.has(String(node?.id))
-  const baseScaleForNode = (node: any) => (isLeaf(node) ? 1 : 0.75)
+  const isLeaf = (node: any) => !hasChild.has(nodeId(node))
+  const isHead = (node: any) => currentHeadId() === nodeId(node)
+  const shouldUseFullSize = (node: any) => isLeaf(node) || isHead(node)
+
+  const baseScaleForNode = (node: any) => (shouldUseFullSize(node) ? 1 : 0.75)
+  const nodeTransform = (node: any, scale: number) => `translate(${node.x}, ${node.y}) scale(${scale})`
 
   const nodeG = g
     .append('g')
     .selectAll('g')
     .data(laidOut.descendants())
     .join('g')
-    .attr('transform', (node: any) => {
-      const s = baseScaleForNode(node)
-      return `translate(${node.x}, ${node.y}) scale(${s})`
-    })
+    .attr('transform', (node: any) => nodeTransform(node, baseScaleForNode(node)))
 
   nodeG
     .style('cursor', 'pointer')
@@ -660,21 +665,21 @@ function renderDagForSelectedLayer() {
       checkoutLayerToRevs(layerIdx, revs)
       renderDagForSelectedLayer()
     })
-    .on('mouseenter', (_event: any, node: any) => {
-      if (isLeaf(node)) return
-      d3.select(_event.currentTarget)
+    .on('mouseenter', (event: any, node: any) => {
+      if (shouldUseFullSize(node)) return
+      d3.select(event.currentTarget)
         .interrupt()
         .transition()
         .duration(120)
-        .attr('transform', `translate(${node.x}, ${node.y}) scale(1)`)
+        .attr('transform', nodeTransform(node, 1))
     })
-    .on('mouseleave', (_event: any, node: any) => {
-      if (isLeaf(node)) return
-      d3.select(_event.currentTarget)
+    .on('mouseleave', (event: any, node: any) => {
+      if (shouldUseFullSize(node)) return
+      d3.select(event.currentTarget)
         .interrupt()
         .transition()
         .duration(120)
-        .attr('transform', `translate(${node.x}, ${node.y}) scale(0.75)`)
+        .attr('transform', nodeTransform(node, 0.75))
     })
 
   nodeG
