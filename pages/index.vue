@@ -201,7 +201,7 @@ function renderRevisionToTempCanvas(layerIdx: number, revIds: ObjectId[]) {
   tempCanvas.height = srcH
   const tempStage = new easljs.Stage(tempCanvas) as EaselStageLike
 
-  const ids = (revIds ?? []).map((x) => String(x))
+  const ids = (revIds ?? []).map((x) => x.toString())
   for (const id of ids) {
     const orig = layer.objectsById[id]
     if (!orig) continue
@@ -369,7 +369,7 @@ function handleUp(event: EaselMouseEventLike) {
   all_stage_layers.value[layer_index.value].redo_revs = {}
 
   all_stage_layers.value[layer_index.value].undo_stack.push(
-    String(surface_layer_shape.value.name ?? surface_layer_shape.value.id)
+    surface_layer_shape.value.name ?? surface_layer_shape.value.id.toString()
   )
 }
 
@@ -379,7 +379,7 @@ const handleUpListener = (...args: unknown[]) => {
 
 function handleDown(event: EaselMouseEventLike) {
   new_shape.value = new easljs.Shape() as EaselShapeLike
-  new_shape.value.name = String(new_shape.value.id)
+  new_shape.value.name = new_shape.value.id.toString()
 
   new_shape.value.graphics.beginStroke('black')
   new_shape.value.graphics.moveTo(event.stageX, event.stageY)
@@ -387,10 +387,10 @@ function handleDown(event: EaselMouseEventLike) {
 
   surface_layer_shape.value = new_shape.value
   surface_layer_shape.value.graphics.beginStroke(setLayerColor())
-  surface_layer_shape.value.name = String(surface_layer_shape.value.id)
+  surface_layer_shape.value.name = surface_layer_shape.value.id.toString()
   stage_layer.value?.addChild(surface_layer_shape.value)
 
-  all_stage_layers.value[layer_index.value].objectsById[String(surface_layer_shape.value.id)] =
+  all_stage_layers.value[layer_index.value].objectsById[surface_layer_shape.value.name] =
     surface_layer_shape.value
 
   stage.value?.addEventListener('stagemousemove', handleMoveListener)
@@ -413,7 +413,7 @@ function checkoutLayerToRevs(layerIdx: number, revIds: ObjectId[]) {
   const targetStage = layer.stage_layer
   targetStage.removeAllChildren()
 
-  const ids = (revIds ?? []).map((x) => String(x))
+  const ids = (revIds ?? []).map((x) => x.toString())
   for (const id of ids) {
     const obj = layer.objectsById[id]
     if (obj) {
@@ -461,7 +461,7 @@ function saveRevision() {
   all_stage_layers.value.forEach((layer) => {
     // NOTE: children order affects z-order, so we keep the current order when
     // computing the revision key.
-    const rev = (layer.stage_layer?.children?.map((x) => String(x.id)) ?? []) as ObjectId[]
+    const rev = (layer.stage_layer?.children?.map((x) => x.id.toString()) ?? [])
     // ハッシュを作成してレイヤーのキーとする
     const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
     layer_objects.push({ key: layerKey, revs: rev })
@@ -628,7 +628,7 @@ function renderDagForSelectedLayer() {
     .join('path')
     .attr('d', (link: any) => line(link.points))
 
-  const nodeId = (node: any) => String(node?.id ?? '')
+  const nodeId = (node: any) => node?.id ?? ''
   const currentHeadId = () => head_hash.value[layer_index.value] ?? ''
 
   const hasChild = new Set<string>()
@@ -691,12 +691,12 @@ function renderDagForSelectedLayer() {
     .attr('preserveAspectRatio', 'xMidYMid meet')
     // Some browsers still require xlink:href
     .attr('href', (node: any) => {
-      const datum = node?.data as DagNodeDatum
-      return getOrCreateThumbnail(layer_index.value, String(datum.id), datum.revs) ?? ''
+      const datum = node?.data
+      return getOrCreateThumbnail(layer_index.value, datum.id, datum.revs) ?? ''
     })
     .attr('xlink:href', (node: any) => {
-      const datum = node?.data as DagNodeDatum
-      return getOrCreateThumbnail(layer_index.value, String(datum.id), datum.revs) ?? ''
+      const datum = node?.data
+      return getOrCreateThumbnail(layer_index.value, datum.id, datum.revs) ?? ''
     })
 
   const overlayHeight = 20
@@ -718,7 +718,7 @@ function renderDagForSelectedLayer() {
     .attr('fill', '#fff')
     .attr('x', 0)
     .attr('y', -nodeHeight / 2 + overlayHeight / 2)
-    .text((node: any) => String(node.id).slice(0, 7))
+    .text((node: any) => node.id?.slice(0, 7) ?? '')
 
   nodeG
     .append('rect')
@@ -898,7 +898,6 @@ canvas {
 }
 
 #dag_div {
-  /* Allow scrolling when the DAG becomes larger than the allocated area. */
   width: auto;
   height: 800px;
   margin: 10px;
@@ -910,7 +909,6 @@ canvas {
 #dag {
   border: 1px solid #ddd;
   background: #fafafa;
-  /* Sized dynamically via JS (width/height attributes). */
   display: block;
 }
 
