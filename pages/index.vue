@@ -854,18 +854,17 @@ onBeforeUnmount(() => {
 }
 
 .title {
-  font-family: 'Quicksand', 'Source Sans Pro', -apple-system, BlinkMacSystemFont,
-    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: 'Quicksand', 'Source Sans Pro', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 500;
   font-size: 72px;
-  color: #35495e;
+  color: #888;
   letter-spacing: 10px;
 }
 
 .subtitle {
   font-weight: 300;
   font-size: 36px;
-  color: #526488;
+  color: #888;
   word-spacing: 5px;
   padding-bottom: 15px;
 }
@@ -927,7 +926,7 @@ canvas {
   gap: 6px;
   padding: 8px;
   border: 1px solid #ddd;
-  background: #fff;
+  background: #fafafa;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -988,6 +987,6 @@ canvas {
 }
 
 .operation_hint {
-  color: #666;
+  color: #888;
 }
 </style>

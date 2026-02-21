@@ -3,7 +3,7 @@ export default defineNuxtConfig({
 
   app: {
     head: {
-      title: process.env.npm_package_name || '',
+      title: 'IllustVCS - A Version Control System for Illustrators',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
