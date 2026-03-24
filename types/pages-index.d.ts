@@ -8,52 +8,12 @@ export type ObjectId = string
 
 export type CacheRef = { value: Record<string, string> }
 
-export interface EaselMouseEventLike {
-  stageX: number
-  stageY: number
-}
+export type StrokePoint = { x: number; y: number }
 
-export interface EaselGraphicsLike {
-  moveTo(x: number, y: number): unknown
-  lineTo(x: number, y: number): unknown
-  beginStroke(color: string): unknown
-  endStroke(): unknown
-}
-
-export interface EaselDisplayObjectLike {
-  id: number | string
-  name?: string
-  clone?: (recursive?: boolean) => EaselDisplayObjectLike
-}
-
-export interface EaselContainerLike extends EaselDisplayObjectLike {
-  children?: EaselDisplayObjectLike[]
-  addChild(child: EaselDisplayObjectLike): unknown
-  removeChild(child: EaselDisplayObjectLike): unknown
-  removeAllChildren(): void
-  getChildByName(name: string): EaselDisplayObjectLike | null
-}
-
-export interface EaselStageLike extends EaselContainerLike {
-  canvas?: HTMLCanvasElement | object
-  update(...args: unknown[]): void
-  addEventListener(type: string, listener: (...args: unknown[]) => void): unknown
-  removeEventListener(type: string, listener: (...args: unknown[]) => void): unknown
-}
-
-export interface EaselShapeLike extends EaselDisplayObjectLike {
-  graphics: EaselGraphicsLike
-}
-
-export type Layer = {
-  index: number
-  stage_layer: EaselStageLike | null
+export type Stroke = {
+  id: ObjectId
   color: string
-  undo_stack: ObjectId[]
-  redo_stack: ObjectId[]
-  redo_revs: Record<ObjectId, EaselDisplayObjectLike | undefined>
-  objectsById: Record<ObjectId, EaselDisplayObjectLike>
-  name?: string
+  points: StrokePoint[]
 }
 
 export type Revision = {

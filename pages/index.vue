@@ -117,26 +117,48 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import sha256 from 'crypto-js/sha256'
 import * as d3 from "d3";
 import * as d3dag from "d3-dag";
+import type { CanvasRenderer, Container, Graphics } from 'pixi.js'
 
 import type {
   CacheRef,
   DagNodeDatum,
-  EaselMouseEventLike,
-  EaselShapeLike,
-  EaselStageLike,
-  Layer,
   ObjectId,
-  Revision
+  Revision,
+  Stroke
 } from '~/types/pages-index'
+
+type Point = { x: number; y: number }
+
+type PixiStage = {
+  canvas: HTMLCanvasElement
+  renderer: CanvasRenderer
+  container: Container
+  render: () => void
+  destroy: () => void
+}
+
+type LayerRuntime = {
+  index: number
+  stage: PixiStage | null
+  color: string
+  undo_stack: ObjectId[]
+  redo_stack: ObjectId[]
+  objectsById: Record<ObjectId, Stroke>
+}
+
+type InProgressStroke = {
+  layerIdx: number
+  id: ObjectId
+  overlayGraphics: Graphics
+  layerGraphics: Graphics
+}
 
 const layer_index = ref(0)
 const head_hash = ref(Array<string>())
 
-const stage = ref<EaselStageLike | null>(null)
-const stage_layer = ref<EaselStageLike | null>(null)
-const all_stage_layers = ref<Layer[]>([])
-const new_shape = ref<EaselShapeLike | null>(null)
-const surface_layer_shape = ref<EaselShapeLike | null>(null)
+const drawing_stage = ref<PixiStage | null>(null)
+const all_stage_layers = ref<LayerRuntime[]>([])
+let inProgress: InProgressStroke | null = null
 const all_revisions = ref<Revision[]>([])
 
 const thumbnailByLayerAndRevisionId = ref<Record<string, string>>({})
@@ -156,8 +178,106 @@ const canRedo = computed(() => {
   return (layer?.redo_stack?.length ?? 0) > 0
 })
 
-// EaselJS: 別ライブラリに置換するかもなのでpseudo typing
-let easljs: any
+let nextStrokeId = 1
+let activePointerId: number | null = null
+let windowMoveHandler: ((ev: PointerEvent) => void) | null = null
+let windowUpHandler: ((ev: PointerEvent) => void) | null = null
+let drawingCanvasEl: HTMLCanvasElement | null = null
+let pointerDownHandler: ((ev: PointerEvent) => void) | null = null
+
+type PixiModule = typeof import('pixi.js')
+let pixi: PixiModule | null = null
+
+function colorToNumber(color: string) {
+  if (!pixi) return 0
+  return pixi.Color.shared.setValue(color).toNumber()
+}
+
+const STROKE_W = 2
+
+function applyStrokeStyle(g: Graphics, color: string) {
+  // Pixi v8+: prefer setStrokeStyle() + stroke()
+  const c = colorToNumber(color)
+  if (typeof (g as any).setStrokeStyle === 'function') {
+    ;(g as any).setStrokeStyle({ width: STROKE_W, color: c, cap: 'round', join: 'round' })
+    return
+  }
+  // Fallback for older Pixi builds
+  ;(g as any).lineStyle?.(STROKE_W, c, 1)
+}
+
+function redrawPath(g: Graphics, color: string, points: Point[]) {
+  g.clear()
+  applyStrokeStyle(g, color)
+
+  if (points.length === 0) return
+
+  g.moveTo(points[0].x, points[0].y)
+  for (let i = 1; i < points.length; i++) {
+    g.lineTo(points[i].x, points[i].y)
+  }
+
+  // Some Pixi versions require stroke() to finalize.
+  try {
+    ;(g as any).stroke?.()
+  } catch {
+    // ignore
+  }
+}
+
+async function createStageFromCanvas(canvas: HTMLCanvasElement): Promise<PixiStage> {
+  // IMPORTANT (Pixi v8):
+  // Renderers must be initialized via async `renderer.init(options)`.
+  // If we skip init, `renderer.view` / `renderer.view.renderTarget` can be
+  // undefined and `renderer.render()` will crash (renderTarget errors).
+  if (!pixi) throw new Error('Pixi is not loaded')
+
+  const renderer = new pixi.CanvasRenderer()
+  await renderer.init({
+    view: canvas,
+    width: canvas.width,
+    height: canvas.height,
+    antialias: true,
+    backgroundAlpha: 0,
+    preserveDrawingBuffer: true
+  } as any)
+
+  const container = new pixi.Container()
+  const render = () => renderer.render(container)
+  const destroy = () => {
+    try {
+      ;(renderer as any).destroy?.(true)
+    } catch {
+      // ignore
+    }
+  }
+
+  return { canvas, renderer, container, render, destroy }
+}
+
+function eventToPoint(canvas: HTMLCanvasElement, ev: PointerEvent): Point {
+  const rect = canvas.getBoundingClientRect()
+  const scaleX = canvas.width / rect.width
+  const scaleY = canvas.height / rect.height
+  return {
+    x: (ev.clientX - rect.left) * scaleX,
+    y: (ev.clientY - rect.top) * scaleY
+  }
+}
+
+function createStrokeGraphics(id: ObjectId, color: string, points: Point[]): Graphics {
+  if (!pixi) throw new Error('Pixi is not loaded')
+  const g = new pixi.Graphics()
+  g.name = id
+
+  redrawPath(g, color, points)
+  return g
+}
+
+function renderAll() {
+  drawing_stage.value?.render()
+  for (const layer of all_stage_layers.value) layer.stage?.render()
+}
 
 function getLatestRevsForLayer(layerIdx: number): ObjectId[] {
   const headId = head_hash.value[layerIdx]
@@ -190,32 +310,41 @@ function getLayerPreviewForLayer(layerIdx: number) {
 
 function renderRevisionToTempCanvas(layerIdx: number, revIds: ObjectId[]) {
   const layer = all_stage_layers.value[layerIdx]
-  if (!layer || !easljs || !layer.stage_layer) return undefined
+  if (!layer?.stage) return undefined
 
-  const baseCanvas = layer.stage_layer?.canvas as HTMLCanvasElement | undefined
+  const baseCanvas = layer.stage.canvas
   const srcW = baseCanvas?.width ?? 960
   const srcH = baseCanvas?.height ?? 800
 
   const tempCanvas = document.createElement('canvas')
   tempCanvas.width = srcW
   tempCanvas.height = srcH
-  const tempStage = new easljs.Stage(tempCanvas) as EaselStageLike
+
+  // For thumbnails/previews we don't need Pixi; draw directly with Canvas2D.
+  // This avoids Pixi renderer init cost and any renderTarget issues.
+  const ctx = tempCanvas.getContext('2d')
+  if (!ctx) return undefined
+
+  // Transparent background is OK; downstream toContainDataUrl fills white.
+  ctx.lineWidth = 2
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
 
   const ids = (revIds ?? []).map((x) => x.toString())
   for (const id of ids) {
-    const orig = layer.objectsById[id]
-    if (!orig) continue
-    // EaselJS display objects can only belong to one parent.
-    // IMPORTANT: never add the original object to the temp stage, otherwise it
-    // will be detached from the real layer stage and break checkout/undo/redo.
-    const cloned = typeof orig.clone === 'function' ? orig.clone(true) : undefined
-    if (!cloned) {
-      console.warn('renderRevisionToTempCanvas: object is not cloneable, skip', id)
-      continue
+    const stroke = layer.objectsById[id]
+    if (!stroke || stroke.points.length === 0) continue
+
+    ctx.strokeStyle = stroke.color
+    ctx.beginPath()
+    ctx.moveTo(stroke.points[0].x, stroke.points[0].y)
+    for (let i = 1; i < stroke.points.length; i++) {
+      const p = stroke.points[i]
+      ctx.lineTo(p.x, p.y)
     }
-    tempStage.addChild(cloned)
+    ctx.stroke()
   }
-  tempStage.update()
+
   return { tempCanvas, srcW, srcH }
 }
 
@@ -282,16 +411,14 @@ function getOrCreateLayerPreview(layerIdx: number, revisionId: string, revIds: O
 }
 
 async function addLayer() {
-  if (!easljs) return
   const index = all_stage_layers.value.length
 
   all_stage_layers.value.push({
     index,
-    stage_layer: null,
+    stage: null,
     color: '#000000',
     undo_stack: [],
     redo_stack: [],
-    redo_revs: {},
     objectsById: {}
   })
   head_hash.value.push('')
@@ -305,12 +432,8 @@ async function addLayer() {
     return
   }
 
-  all_stage_layers.value[index].stage_layer = new easljs.Stage(canvasId) as EaselStageLike
-
-  if (all_stage_layers.value.length === 1) {
-    layer_index.value = 0
-    stage_layer.value = selectLayer()
-  }
+  all_stage_layers.value[index].stage = await createStageFromCanvas(canvas)
+  all_stage_layers.value[index].stage?.render()
 }
 
 function setLayerColor() {
@@ -321,12 +444,11 @@ function setLayerColor() {
 }
 
 function selectLayer() {
-  return all_stage_layers.value[layer_index.value]?.stage_layer
+  return all_stage_layers.value[layer_index.value]?.stage
 }
 
 function selectLayerByIndex(idx: number) {
   layer_index.value = idx
-  stage_layer.value = selectLayer()
 }
 
 function scheduleDagRender() {
@@ -338,120 +460,65 @@ function scheduleDagRender() {
   }
 }
 
-function handleMove(event: EaselMouseEventLike) {
-  if (!new_shape.value) return
-  new_shape.value.graphics.lineTo(event.stageX, event.stageY)
-}
-
-// EaselJS `Stage.add/removeEventListener` is typed in this project as
-// `(...args: unknown[]) => void` (see `types/pages-index.d.ts`).
-//
-// TypeScript function parameter variance means we can't pass a strongly-typed
-// `(event: EaselMouseEventLike) => void` directly. So we register thin wrapper
-// listeners that accept `unknown[]` and cast the first arg.
-const handleMoveListener = (...args: unknown[]) => {
-  handleMove(args[0] as EaselMouseEventLike)
-}
-
-function handleUp(event: EaselMouseEventLike) {
-  if (!new_shape.value || !surface_layer_shape.value) return
-
-  new_shape.value.graphics.lineTo(event.stageX, event.stageY)
-  new_shape.value.graphics.endStroke()
-
-  stage.value?.removeEventListener('stagemousemove', handleMoveListener)
-  stage.value?.removeEventListener('stagemouseup', handleUpListener)
-  stage.value?.update()
-  stage_layer.value?.update()
-
-  // If we draw a new stroke after undoing, redo history becomes invalid.
-  all_stage_layers.value[layer_index.value].redo_stack = []
-  all_stage_layers.value[layer_index.value].redo_revs = {}
-
-  all_stage_layers.value[layer_index.value].undo_stack.push(
-    surface_layer_shape.value.name ?? surface_layer_shape.value.id.toString()
-  )
-}
-
-const handleUpListener = (...args: unknown[]) => {
-  handleUp(args[0] as EaselMouseEventLike)
-}
-
-function handleDown(event: EaselMouseEventLike) {
-  new_shape.value = new easljs.Shape() as EaselShapeLike
-  new_shape.value.name = new_shape.value.id.toString()
-
-  new_shape.value.graphics.beginStroke('black')
-  new_shape.value.graphics.moveTo(event.stageX, event.stageY)
-  stage.value?.addChild(new_shape.value)
-
-  surface_layer_shape.value = new_shape.value
-  surface_layer_shape.value.graphics.beginStroke(setLayerColor())
-  surface_layer_shape.value.name = surface_layer_shape.value.id.toString()
-  stage_layer.value?.addChild(surface_layer_shape.value)
-
-  all_stage_layers.value[layer_index.value].objectsById[surface_layer_shape.value.name] =
-    surface_layer_shape.value
-
-  stage.value?.addEventListener('stagemousemove', handleMoveListener)
-  stage.value?.addEventListener('stagemouseup', handleUpListener)
-}
-
-const handleDownListener = (...args: unknown[]) => {
-  handleDown(args[0] as EaselMouseEventLike)
-}
+// (CreateJS 互換の stagemouse* ハンドラは廃止。
+//  Pixi の pointer イベントから直接描画する)
 
 function checkoutLayerToRevs(layerIdx: number, revIds: ObjectId[]) {
   const layer = all_stage_layers.value[layerIdx]
-  if (!layer?.stage_layer) return
+  if (!layer?.stage) return
 
-  if (stage.value) {
-    stage.value.removeAllChildren()
-    stage.value.update()
-  }
+  // Clear overlay drawing stage (matches prior behavior during checkout).
+  drawing_stage.value?.container.removeChildren()
+  drawing_stage.value?.render()
 
-  const targetStage = layer.stage_layer
-  targetStage.removeAllChildren()
+  const target = layer.stage
+  target.container.removeChildren()
 
   const ids = (revIds ?? []).map((x) => x.toString())
   for (const id of ids) {
-    const obj = layer.objectsById[id]
-    if (obj) {
-      targetStage.addChild(obj)
-    } else {
-      console.warn('checkout: object not found for id', id)
+    const stroke = layer.objectsById[id]
+    if (!stroke) {
+      console.warn('checkout: stroke not found for id', id)
+      continue
     }
+    target.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.points))
   }
 
   layer.undo_stack = [...ids]
   layer.redo_stack = []
-  layer.redo_revs = {}
-
-  targetStage.update()
+  target.render()
 }
 
 function handleUndo() {
   if (all_stage_layers.value[layer_index.value].undo_stack.length === 0) return
-  const name = all_stage_layers.value[layer_index.value].undo_stack.pop()!
-  all_stage_layers.value[layer_index.value].redo_stack.push(name)
-  const found = stage_layer.value?.getChildByName(name) ?? undefined
-  all_stage_layers.value[layer_index.value].redo_revs[name] = found
+  const layer = all_stage_layers.value[layer_index.value]
+  const id = layer.undo_stack.pop()!
+  layer.redo_stack.push(id)
 
-  if (found) stage_layer.value?.removeChild(found)
-  stage_layer.value?.update()
+  const st = layer.stage
+  if (!st) return
+
+  const found = st.container.getChildByName(id)
+  if (found) st.container.removeChild(found)
+  st.render()
 }
 
 function handleRedo() {
   if (all_stage_layers.value[layer_index.value].redo_stack.length === 0) return
-  const name = all_stage_layers.value[layer_index.value].redo_stack.pop()!
-  all_stage_layers.value[layer_index.value].undo_stack.push(name)
+  const layer = all_stage_layers.value[layer_index.value]
+  const id = layer.redo_stack.pop()!
+  layer.undo_stack.push(id)
 
-  const found = all_stage_layers.value[layer_index.value].redo_revs[name]
-  if (!found) console.log('revision not found')
-  else stage_layer.value?.addChild(found)
+  const st = layer.stage
+  if (!st) return
 
-  delete all_stage_layers.value[layer_index.value].redo_revs[name]
-  stage_layer.value?.update()
+  const stroke = layer.objectsById[id]
+  if (!stroke) {
+    console.log('stroke not found')
+    return
+  }
+  st.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.points))
+  st.render()
 }
 
 function saveRevision() {
@@ -461,7 +528,7 @@ function saveRevision() {
   all_stage_layers.value.forEach((layer) => {
     // NOTE: children order affects z-order, so we keep the current order when
     // computing the revision key.
-    const rev = (layer.stage_layer?.children?.map((x) => x.id.toString()) ?? [])
+    const rev = (layer.stage?.container?.children?.map((x) => String((x as any)?.name ?? '')) ?? []).filter(Boolean)
     // ハッシュを作成してレイヤーのキーとする
     const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
     layer_objects.push({ key: layerKey, revs: rev })
@@ -788,12 +855,6 @@ function changeLayerIndex() {
 
 function handleChangeLayer() {
   changeLayerIndex()
-  stage_layer.value = selectLayer()
-}
-
-function onTick() {
-  stage.value?.update?.()
-  stage_layer.value?.update?.()
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -809,20 +870,109 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
-  const mod = await import('@createjs/easeljs')
-  easljs = mod
+  // IMPORTANT: PixiJS must be loaded on client only.
+  // Importing it at module top-level can break Nuxt SSR with 500 errors.
+  pixi = await import('pixi.js')
 
-  stage.value = new easljs.Stage('drawingCanvas') as EaselStageLike
+  drawingCanvasEl = document.getElementById('drawingCanvas') as HTMLCanvasElement | null
+  if (!drawingCanvasEl) {
+    console.warn('drawingCanvas not found')
+    return
+  }
+
+  drawing_stage.value = await createStageFromCanvas(drawingCanvasEl)
 
   await addLayer()
 
-  stage_layer.value = selectLayer()
+  // Pointer events
+  pointerDownHandler = (ev: PointerEvent) => {
+    if (ev.button !== 0) return
+    if (!drawing_stage.value) return
+    if (!drawingCanvasEl) return
 
-  stage.value.addEventListener('stagemousedown', handleDownListener)
+    const layer = all_stage_layers.value[layer_index.value]
+    const layerStage = layer?.stage
+    if (!layerStage) return
+
+    activePointerId = ev.pointerId
+    try {
+      drawingCanvasEl.setPointerCapture?.(ev.pointerId)
+    } catch {
+      // ignore
+    }
+
+    const p = eventToPoint(drawingCanvasEl, ev)
+    const id = String(nextStrokeId++)
+
+    // In CreateJS version, drawingCanvas shows a black stroke overlay while the
+    // real layer canvas stores the colored stroke (used for previews).
+    if (!pixi) return
+    const overlayG = new pixi.Graphics()
+    overlayG.name = id
+    redrawPath(overlayG, '#000000', [{ x: p.x, y: p.y }])
+
+    const strokeColor = setLayerColor()
+    const stroke: Stroke = { id, color: strokeColor, points: [{ x: p.x, y: p.y }] }
+    layer.objectsById[id] = stroke
+
+    const layerG = new pixi.Graphics()
+    layerG.name = id
+    redrawPath(layerG, strokeColor, [{ x: p.x, y: p.y }])
+
+    drawing_stage.value.container.addChild(overlayG)
+    layerStage.container.addChild(layerG)
+    renderAll()
+
+    inProgress = {
+      layerIdx: layer.index,
+      id,
+      overlayGraphics: overlayG,
+      layerGraphics: layerG
+    }
+
+    windowMoveHandler = (moveEv: PointerEvent) => {
+      if (activePointerId !== moveEv.pointerId) return
+      if (!inProgress) return
+      if (!drawingCanvasEl) return
+      const q = eventToPoint(drawingCanvasEl, moveEv)
+
+      const targetLayer = all_stage_layers.value[inProgress.layerIdx]
+      const s = targetLayer.objectsById[inProgress.id]
+      if (!s) return
+      s.points.push({ x: q.x, y: q.y })
+
+      redrawPath(inProgress.overlayGraphics, '#000000', s.points)
+      redrawPath(inProgress.layerGraphics, s.color, s.points)
+      renderAll()
+    }
+
+    windowUpHandler = (upEv: PointerEvent) => {
+      if (activePointerId !== upEv.pointerId) return
+      if (!inProgress) return
+
+      const targetLayer = all_stage_layers.value[inProgress.layerIdx]
+
+      // If we draw a new stroke after undoing, redo history becomes invalid.
+      targetLayer.redo_stack = []
+
+      // Push stroke id for undo stack
+      targetLayer.undo_stack.push(inProgress.id)
+
+      inProgress = null
+      activePointerId = null
+
+      if (windowMoveHandler) window.removeEventListener('pointermove', windowMoveHandler)
+      if (windowUpHandler) window.removeEventListener('pointerup', windowUpHandler)
+      windowMoveHandler = null
+      windowUpHandler = null
+    }
+
+    window.addEventListener('pointermove', windowMoveHandler, { passive: true })
+    window.addEventListener('pointerup', windowUpHandler, { passive: true })
+  }
+
+  drawingCanvasEl.addEventListener('pointerdown', pointerDownHandler, { passive: true })
   document.addEventListener('keydown', handleKeydown, false)
-
-  easljs.Ticker.timingMode = easljs.Ticker.RAF
-  easljs.Ticker.addEventListener('tick', onTick)
 
   scheduleDagRender()
 })
@@ -833,13 +983,22 @@ watch(layer_index, () => {
 })
 
 onBeforeUnmount(() => {
-  if (stage.value) {
-    stage.value.removeEventListener('stagemousedown', handleDownListener)
-    stage.value.removeEventListener('stagemousemove', handleMoveListener)
-    stage.value.removeEventListener('stagemouseup', handleUpListener)
+  if (drawingCanvasEl && pointerDownHandler) {
+    drawingCanvasEl.removeEventListener('pointerdown', pointerDownHandler)
   }
+  drawingCanvasEl = null
+  pointerDownHandler = null
+
   document.removeEventListener('keydown', handleKeydown, false)
-  if (easljs?.Ticker) easljs.Ticker.removeEventListener('tick', onTick)
+
+  if (windowMoveHandler) window.removeEventListener('pointermove', windowMoveHandler)
+  if (windowUpHandler) window.removeEventListener('pointerup', windowUpHandler)
+  windowMoveHandler = null
+  windowUpHandler = null
+  activePointerId = null
+
+  drawing_stage.value?.destroy()
+  for (const layer of all_stage_layers.value) layer.stage?.destroy()
 })
 </script>
 
@@ -879,6 +1038,7 @@ onBeforeUnmount(() => {
 
 canvas {
   position: absolute;
+  top: 0;
   left: 0;
 }
 
