@@ -460,9 +460,6 @@ function scheduleDagRender() {
   }
 }
 
-// (CreateJS 互換の stagemouse* ハンドラは廃止。
-//  Pixi の pointer イベントから直接描画する)
-
 function checkoutLayerToRevs(layerIdx: number, revIds: ObjectId[]) {
   const layer = all_stage_layers.value[layerIdx]
   if (!layer?.stage) return
@@ -500,7 +497,11 @@ function handleUndo() {
 
   const found = st.container.getChildByName(id)
   if (found) st.container.removeChild(found)
-  st.render()
+
+  const overlayFound = drawing_stage.value?.container.getChildByName(id)
+  if (overlayFound) drawing_stage.value?.container.removeChild(overlayFound)
+
+  renderAll()
 }
 
 function handleRedo() {
@@ -518,7 +519,13 @@ function handleRedo() {
     return
   }
   st.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.points))
-  st.render()
+
+  if (pixi && drawing_stage.value) {
+    const color = all_stage_layers.value[layer_index.value].color || '#000000'
+    drawing_stage.value.container.addChild(createStrokeGraphics(stroke.id, color, stroke.points))
+  }
+
+  renderAll()
 }
 
 function saveRevision() {
@@ -909,7 +916,6 @@ onMounted(async () => {
     if (!pixi) return
     const overlayG = new pixi.Graphics()
     overlayG.name = id
-    redrawPath(overlayG, '#000000', [{ x: p.x, y: p.y }])
 
     const strokeColor = setLayerColor()
     const stroke: Stroke = { id, color: strokeColor, points: [{ x: p.x, y: p.y }] }
@@ -941,7 +947,6 @@ onMounted(async () => {
       if (!s) return
       s.points.push({ x: q.x, y: q.y })
 
-      redrawPath(inProgress.overlayGraphics, '#000000', s.points)
       redrawPath(inProgress.layerGraphics, s.color, s.points)
       renderAll()
     }
