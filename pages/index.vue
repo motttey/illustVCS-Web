@@ -149,7 +149,6 @@ type LayerRuntime = {
 type InProgressStroke = {
   layerIdx: number
   id: ObjectId
-  overlayGraphics: Graphics
   layerGraphics: Graphics
 }
 
@@ -266,11 +265,15 @@ function eventToPoint(canvas: HTMLCanvasElement, ev: PointerEvent): Point {
 }
 
 function createStrokeGraphics(id: ObjectId, color: string, points: Point[]): Graphics {
+  const g = createNamedGraphics(id)
+  redrawPath(g, color, points)
+  return g
+}
+
+function createNamedGraphics(id: ObjectId): Graphics {
   if (!pixi) throw new Error('Pixi is not loaded')
   const g = new pixi.Graphics()
   g.name = id
-
-  redrawPath(g, color, points)
   return g
 }
 
@@ -464,7 +467,6 @@ function checkoutLayerToRevs(layerIdx: number, revIds: ObjectId[]) {
   const layer = all_stage_layers.value[layerIdx]
   if (!layer?.stage) return
 
-  // Clear overlay drawing stage (matches prior behavior during checkout).
   drawing_stage.value?.container.removeChildren()
   drawing_stage.value?.render()
 
@@ -914,25 +916,19 @@ onMounted(async () => {
     // In CreateJS version, drawingCanvas shows a black stroke overlay while the
     // real layer canvas stores the colored stroke (used for previews).
     if (!pixi) return
-    const overlayG = new pixi.Graphics()
-    overlayG.name = id
-
     const strokeColor = setLayerColor()
     const stroke: Stroke = { id, color: strokeColor, points: [{ x: p.x, y: p.y }] }
     layer.objectsById[id] = stroke
 
-    const layerG = new pixi.Graphics()
-    layerG.name = id
+    const layerG = createNamedGraphics(id)
     redrawPath(layerG, strokeColor, [{ x: p.x, y: p.y }])
 
-    drawing_stage.value.container.addChild(overlayG)
     layerStage.container.addChild(layerG)
     renderAll()
 
     inProgress = {
       layerIdx: layer.index,
       id,
-      overlayGraphics: overlayG,
       layerGraphics: layerG
     }
 
