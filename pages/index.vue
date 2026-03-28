@@ -118,6 +118,7 @@ import sha256 from 'crypto-js/sha256'
 import * as d3 from "d3";
 import * as d3dag from "d3-dag";
 import type { CanvasRenderer, Container, Graphics } from 'pixi.js'
+import * as pixi from 'pixi.js'
 
 import type {
   CacheRef,
@@ -179,13 +180,10 @@ const canRedo = computed(() => {
 
 let nextStrokeId = 1
 let activePointerId: number | null = null
+let drawingCanvasElement: HTMLCanvasElement | null = null
 let windowMoveHandler: ((ev: PointerEvent) => void) | null = null
 let windowUpHandler: ((ev: PointerEvent) => void) | null = null
-let drawingCanvasEl: HTMLCanvasElement | null = null
 let pointerDownHandler: ((ev: PointerEvent) => void) | null = null
-
-type PixiModule = typeof import('pixi.js')
-let pixi: PixiModule | null = null
 
 function colorToNumber(color: string) {
   if (!pixi) return 0
@@ -220,15 +218,11 @@ function redrawPath(g: Graphics, color: string, points: Point[]) {
   try {
     ;(g as any).stroke?.()
   } catch {
-    // ignore
+    console.log('stroke() failed, likely due to Pixi version. If you see rendering issues, consider upgrading Pixi to v8+.')
   }
 }
 
 async function createStageFromCanvas(canvas: HTMLCanvasElement): Promise<PixiStage> {
-  // IMPORTANT (Pixi v8):
-  // Renderers must be initialized via async `renderer.init(options)`.
-  // If we skip init, `renderer.view` / `renderer.view.renderTarget` can be
-  // undefined and `renderer.render()` will crash (renderTarget errors).
   if (!pixi) throw new Error('Pixi is not loaded')
 
   const renderer = new pixi.CanvasRenderer()
@@ -241,13 +235,17 @@ async function createStageFromCanvas(canvas: HTMLCanvasElement): Promise<PixiSta
     preserveDrawingBuffer: true
   } as any)
 
+  if (!renderer.view) {
+    throw new Error('Failed to initialize Pixi renderer with the provided canvas')
+  }
+
   const container = new pixi.Container()
   const render = () => renderer.render(container)
   const destroy = () => {
     try {
       ;(renderer as any).destroy?.(true)
     } catch {
-      // ignore
+      console.log('destroy failed, fallback to legacy destroy')
     }
   }
 
@@ -664,15 +662,13 @@ function renderDagForSelectedLayer() {
 
   const nodeWidth = THUMB_SIZE
   const nodeHeight = THUMB_SIZE
-  // Layout spacing between nodes (in addition to node visual size)
+  // ノード間のスペース。見た目が崩れるので固定値。
   const nodeGapX = 24
   const nodeGapY = 28
   const margin = 10
 
   const layout = d3dag
     .sugiyama()
-    // nodeSize controls the distance between node centers.
-    // Add a small gap to avoid nodes/edges feeling cramped.
     .nodeSize(() => [nodeWidth + nodeGapX, nodeHeight + nodeGapY])
 
   const { dag: laidOut, width, height } = layout(dag)
@@ -879,17 +875,13 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
-  // IMPORTANT: PixiJS must be loaded on client only.
-  // Importing it at module top-level can break Nuxt SSR with 500 errors.
-  pixi = await import('pixi.js')
-
-  drawingCanvasEl = document.getElementById('drawingCanvas') as HTMLCanvasElement | null
-  if (!drawingCanvasEl) {
+  drawingCanvasElement = document.getElementById('drawingCanvas') as HTMLCanvasElement | null
+  if (!drawingCanvasElement) {
     console.warn('drawingCanvas not found')
     return
   }
 
-  drawing_stage.value = await createStageFromCanvas(drawingCanvasEl)
+  drawing_stage.value = await createStageFromCanvas(drawingCanvasElement)
 
   await addLayer()
 
@@ -897,7 +889,7 @@ onMounted(async () => {
   pointerDownHandler = (ev: PointerEvent) => {
     if (ev.button !== 0) return
     if (!drawing_stage.value) return
-    if (!drawingCanvasEl) return
+    if (!drawingCanvasElement) return
 
     const layer = all_stage_layers.value[layer_index.value]
     const layerStage = layer?.stage
@@ -905,16 +897,14 @@ onMounted(async () => {
 
     activePointerId = ev.pointerId
     try {
-      drawingCanvasEl.setPointerCapture?.(ev.pointerId)
+      drawingCanvasElement.setPointerCapture?.(ev.pointerId)
     } catch {
-      // ignore
+      console.warn('setPointerCapture failed, pointer events may behave unexpectedly')
     }
 
-    const p = eventToPoint(drawingCanvasEl, ev)
+    const p = eventToPoint(drawingCanvasElement, ev)
     const id = String(nextStrokeId++)
 
-    // In CreateJS version, drawingCanvas shows a black stroke overlay while the
-    // real layer canvas stores the colored stroke (used for previews).
     if (!pixi) return
     const strokeColor = setLayerColor()
     const stroke: Stroke = { id, color: strokeColor, points: [{ x: p.x, y: p.y }] }
@@ -935,8 +925,8 @@ onMounted(async () => {
     windowMoveHandler = (moveEv: PointerEvent) => {
       if (activePointerId !== moveEv.pointerId) return
       if (!inProgress) return
-      if (!drawingCanvasEl) return
-      const q = eventToPoint(drawingCanvasEl, moveEv)
+      if (!drawingCanvasElement) return
+      const q = eventToPoint(drawingCanvasElement, moveEv)
 
       const targetLayer = all_stage_layers.value[inProgress.layerIdx]
       const s = targetLayer.objectsById[inProgress.id]
@@ -972,7 +962,7 @@ onMounted(async () => {
     window.addEventListener('pointerup', windowUpHandler, { passive: true })
   }
 
-  drawingCanvasEl.addEventListener('pointerdown', pointerDownHandler, { passive: true })
+  drawingCanvasElement.addEventListener('pointerdown', pointerDownHandler, { passive: true })
   document.addEventListener('keydown', handleKeydown, false)
 
   scheduleDagRender()
@@ -984,10 +974,10 @@ watch(layer_index, () => {
 })
 
 onBeforeUnmount(() => {
-  if (drawingCanvasEl && pointerDownHandler) {
-    drawingCanvasEl.removeEventListener('pointerdown', pointerDownHandler)
+  if (drawingCanvasElement && pointerDownHandler) {
+    drawingCanvasElement.removeEventListener('pointerdown', pointerDownHandler)
   }
-  drawingCanvasEl = null
+  drawingCanvasElement = null
   pointerDownHandler = null
 
   document.removeEventListener('keydown', handleKeydown, false)
