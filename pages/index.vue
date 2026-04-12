@@ -8,26 +8,6 @@
         version control system for drawing
       </h2>
 
-      <div id="palette">
-        <div class="palette_row">
-          <label class="palette_label" for="inputColor">Select Color</label>
-          <input id="inputColor" width="200px" type="color" value="#000000">
-        </div>
-
-        <div class="palette_row">
-          <label class="palette_label" for="inputStrokeWidth">Pen Width</label>
-          <input
-            id="inputStrokeWidth"
-            type="range"
-            min="1"
-            max="50"
-            step="1"
-            v-model.number="strokeWidth"
-          >
-          <span class="palette_value">{{ strokeWidth }}px</span>
-        </div>
-      </div>
-
       <div id="revisions">
         <div class="revisions_header">
           <div class="revisions_title">
@@ -83,29 +63,51 @@
         </div>
       </div>
 
-      <div id="layers">
-        <button
-          v-for="(layer, idx) in all_stage_layers"
-          :key="layer.index"
-          type="button"
-          class="layer_card"
-          :class="{ layer_card_selected: idx === layer_index }"
-          @click="selectLayerByIndex(idx)"
-        >
-          <div class="layer_card_label">
-            Layer {{ idx }}
+      <div id="tool_area">
+        <div id="palette">
+          <div class="palette_row">
+            <label class="palette_label" for="inputColor">Select Color</label>
+            <input id="inputColor" width="200px" type="color" value="#000000">
           </div>
-          <div class="layer_card_preview">
-            <img
-              v-if="head_hash[idx]"
-              :src="getLayerPreviewForLayer(idx)"
-              :alt="`Layer ${idx} preview`"
+
+          <div class="palette_row">
+            <label class="palette_label" for="inputStrokeWidth">Pen Width</label>
+            <input
+              id="inputStrokeWidth"
+              type="range"
+              min="1"
+              max="50"
+              step="1"
+              v-model.number="strokeWidth"
             >
-            <div v-else class="layer_card_preview_placeholder">
-              (no revision)
-            </div>
+            <span class="palette_value">{{ strokeWidth }}px</span>
           </div>
-        </button>
+        </div>
+
+        <div id="layers">
+          <button
+            v-for="(layer, idx) in all_stage_layers"
+            :key="layer.index"
+            type="button"
+            class="layer_card"
+            :class="{ layer_card_selected: idx === layer_index }"
+            @click="selectLayerByIndex(idx)"
+          >
+            <div class="layer_card_label">
+              Layer {{ idx }}
+            </div>
+            <div class="layer_card_preview">
+              <img
+                v-if="head_hash[idx]"
+                :src="getLayerPreviewForLayer(idx)"
+                :alt="`Layer ${idx} preview`"
+              >
+              <div v-else class="layer_card_preview_placeholder">
+                (no revision)
+              </div>
+            </div>
+          </button>
+        </div>
       </div>
 
       <div id="work_area">
@@ -1016,7 +1018,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  justify-content: center;
+  justify-content: start;
   margin: 6px 0;
 }
 
@@ -1071,6 +1073,12 @@ canvas {
   position: absolute;
   top: 0;
   left: 0;
+}
+
+#tool_area {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
 }
 
 #work_area {
