@@ -13,6 +13,7 @@ export type StrokePoint = { x: number; y: number }
 export type Stroke = {
   id: ObjectId
   color: string
+  width: number
   points: StrokePoint[]
 }
 

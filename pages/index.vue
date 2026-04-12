@@ -9,7 +9,23 @@
       </h2>
 
       <div id="palette">
-        Select Color <input id="inputColor" width="200px" type="color" value="#000000">
+        <div class="palette_row">
+          <label class="palette_label" for="inputColor">Select Color</label>
+          <input id="inputColor" width="200px" type="color" value="#000000">
+        </div>
+
+        <div class="palette_row">
+          <label class="palette_label" for="inputStrokeWidth">Pen Width</label>
+          <input
+            id="inputStrokeWidth"
+            type="range"
+            min="1"
+            max="50"
+            step="1"
+            v-model.number="strokeWidth"
+          >
+          <span class="palette_value">{{ strokeWidth }}px</span>
+        </div>
       </div>
 
       <div id="revisions">
@@ -190,22 +206,24 @@ function colorToNumber(color: string) {
   return pixi.Color.shared.setValue(color).toNumber()
 }
 
-const STROKE_W = 2
+// Global (shared) pen width.
+// Default keeps current behavior (2px).
+const strokeWidth = ref(2)
 
-function applyStrokeStyle(g: Graphics, color: string) {
+function applyStrokeStyle(g: Graphics, color: string, width: number) {
   // Pixi v8+: prefer setStrokeStyle() + stroke()
   const c = colorToNumber(color)
   if (typeof (g as any).setStrokeStyle === 'function') {
-    ;(g as any).setStrokeStyle({ width: STROKE_W, color: c, cap: 'round', join: 'round' })
+    ;(g as any).setStrokeStyle({ width, color: c, cap: 'round', join: 'round' })
     return
   }
   // Fallback for older Pixi builds
-  ;(g as any).lineStyle?.(STROKE_W, c, 1)
+  ;(g as any).lineStyle?.(width, c, 1)
 }
 
-function redrawPath(g: Graphics, color: string, points: Point[]) {
+function redrawPath(g: Graphics, color: string, width: number, points: Point[]) {
   g.clear()
-  applyStrokeStyle(g, color)
+  applyStrokeStyle(g, color, width)
 
   if (points.length === 0) return
 
@@ -262,9 +280,9 @@ function eventToPoint(canvas: HTMLCanvasElement, ev: PointerEvent): Point {
   }
 }
 
-function createStrokeGraphics(id: ObjectId, color: string, points: Point[]): Graphics {
+function createStrokeGraphics(id: ObjectId, color: string, width: number, points: Point[]): Graphics {
   const g = createNamedGraphics(id)
-  redrawPath(g, color, points)
+  redrawPath(g, color, width, points)
   return g
 }
 
@@ -327,7 +345,6 @@ function renderRevisionToTempCanvas(layerIdx: number, revIds: ObjectId[]) {
   if (!ctx) return undefined
 
   // Transparent background is OK; downstream toContainDataUrl fills white.
-  ctx.lineWidth = 2
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
 
@@ -337,6 +354,7 @@ function renderRevisionToTempCanvas(layerIdx: number, revIds: ObjectId[]) {
     if (!stroke || stroke.points.length === 0) continue
 
     ctx.strokeStyle = stroke.color
+    ctx.lineWidth = stroke.width ?? 2
     ctx.beginPath()
     ctx.moveTo(stroke.points[0].x, stroke.points[0].y)
     for (let i = 1; i < stroke.points.length; i++) {
@@ -478,7 +496,7 @@ function checkoutLayerToRevs(layerIdx: number, revIds: ObjectId[]) {
       console.warn('checkout: stroke not found for id', id)
       continue
     }
-    target.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.points))
+    target.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.width ?? 2, stroke.points))
   }
 
   layer.undo_stack = [...ids]
@@ -518,11 +536,11 @@ function handleRedo() {
     console.log('stroke not found')
     return
   }
-  st.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.points))
+  st.container.addChild(createStrokeGraphics(stroke.id, stroke.color, stroke.width ?? 2, stroke.points))
 
   if (pixi && drawing_stage.value) {
     const color = all_stage_layers.value[layer_index.value].color || '#000000'
-    drawing_stage.value.container.addChild(createStrokeGraphics(stroke.id, color, stroke.points))
+    drawing_stage.value.container.addChild(createStrokeGraphics(stroke.id, color, stroke.width ?? 2, stroke.points))
   }
 
   renderAll()
@@ -907,11 +925,11 @@ onMounted(async () => {
 
     if (!pixi) return
     const strokeColor = setLayerColor()
-    const stroke: Stroke = { id, color: strokeColor, points: [{ x: p.x, y: p.y }] }
+    const stroke: Stroke = { id, color: strokeColor, width: strokeWidth.value, points: [{ x: p.x, y: p.y }] }
     layer.objectsById[id] = stroke
 
     const layerG = createNamedGraphics(id)
-    redrawPath(layerG, strokeColor, [{ x: p.x, y: p.y }])
+    redrawPath(layerG, strokeColor, stroke.width, [{ x: p.x, y: p.y }])
 
     layerStage.container.addChild(layerG)
     renderAll()
@@ -933,7 +951,7 @@ onMounted(async () => {
       if (!s) return
       s.points.push({ x: q.x, y: q.y })
 
-      redrawPath(inProgress.layerGraphics, s.color, s.points)
+      redrawPath(inProgress.layerGraphics, s.color, s.width, s.points)
       renderAll()
     }
 
@@ -994,6 +1012,28 @@ onBeforeUnmount(() => {
 </script>
 
 <style>
+.palette_row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  margin: 6px 0;
+}
+
+.palette_label {
+  font-size: 12px;
+  color: #444;
+  width: 88px;
+  text-align: right;
+}
+
+.palette_value {
+  font-size: 12px;
+  color: #444;
+  width: 48px;
+  text-align: left;
+}
+
 .container {
   margin: 0 auto;
   min-height: 100vh;
