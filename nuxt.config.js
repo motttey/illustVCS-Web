@@ -16,4 +16,18 @@ export default defineNuxtConfig({
   css: ['bootstrap/dist/css/bootstrap.css'],
 
   modules: ['@bootstrap-vue-next/nuxt'],
+
+  vite: {
+    optimizeDeps: {
+      include: [
+        'bootstrap-vue-next',
+        '@vue/devtools-core',
+        '@vue/devtools-kit',
+        'crypto-js/sha256',
+        'd3',
+        'd3-dag',
+        'pixi.js',
+      ]
+    }
+  }
 });
