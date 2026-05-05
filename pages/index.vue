@@ -12,7 +12,7 @@
         <div class="revisions_header">
           <div class="revisions_title">
             <span>Revisions (selected layer: {{ layer_index }})</span>
-            <small class="operation_hint">s: save / r: redo / ctrl: undo / l: change layer</small>
+            <small class="operation_hint">s: save / r: redo / ctrl: undo / l: change layer / shift+d: toggle eraser</small>
           </div>
 
           <div class="revisions_toolbar btn-group" role="group" aria-label="Operations">
@@ -71,6 +71,31 @@
           </div>
 
           <div class="palette_row">
+            <label class="palette_label">Tool</label>
+            <div class="btn-group" role="group" aria-label="Tool">
+              <button
+                type="button"
+                class="btn btn-sm"
+                :class="toolMode === 'pen' ? 'btn-primary' : 'btn-outline-primary'"
+                title="Pen"
+                @click="toolMode = 'pen'"
+              >
+                Pen
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                :class="toolMode === 'eraser' ? 'btn-danger' : 'btn-outline-danger'"
+                title="Eraser (Shift+D)"
+                @click="toolMode = 'eraser'"
+              >
+                Eraser
+              </button>
+            </div>
+            <small class="tool_hint">Shift+D</small>
+          </div>
+
+          <div class="palette_row">
             <label class="palette_label" for="inputStrokeWidth">Pen Width</label>
             <input
               id="inputStrokeWidth"
@@ -119,7 +144,12 @@
             width="960"
             height="800"
           ></canvas>
-          <canvas id="drawingCanvas" width="960" height="800"></canvas>
+          <canvas
+            id="drawingCanvas"
+            width="960"
+            height="800"
+            :style="{ cursor: toolMode === 'eraser' ? 'cell' : 'crosshair' }"
+          ></canvas>
         </div>
 
         <div id="dag_div">
@@ -195,6 +225,8 @@ const canRedo = computed(() => {
   const layer = all_stage_layers.value[layer_index.value]
   return (layer?.redo_stack?.length ?? 0) > 0
 })
+
+const toolMode = ref<'pen' | 'eraser'>('pen')
 
 let nextStrokeId = 1
 let activePointerId: number | null = null
@@ -279,6 +311,66 @@ function eventToPoint(canvas: HTMLCanvasElement, ev: PointerEvent): Point {
   return {
     x: (ev.clientX - rect.left) * scaleX,
     y: (ev.clientY - rect.top) * scaleY
+  }
+}
+
+function distPointToSegment(p: Point, a: Point, b: Point): number {
+  const abx = b.x - a.x
+  const aby = b.y - a.y
+  const apx = p.x - a.x
+  const apy = p.y - a.y
+  const abLen2 = abx * abx + aby * aby
+  if (abLen2 === 0) {
+    const dx = p.x - a.x
+    const dy = p.y - a.y
+    return Math.hypot(dx, dy)
+  }
+  let t = (apx * abx + apy * aby) / abLen2
+  t = Math.max(0, Math.min(1, t))
+  const cx = a.x + t * abx
+  const cy = a.y + t * aby
+  return Math.hypot(p.x - cx, p.y - cy)
+}
+
+function distPointToPolyline(p: Point, pts: Point[]): number {
+  if (!pts || pts.length === 0) return Number.POSITIVE_INFINITY
+  if (pts.length === 1) return Math.hypot(p.x - pts[0].x, p.y - pts[0].y)
+
+  let best = Number.POSITIVE_INFINITY
+  for (let i = 0; i < pts.length - 1; i++) {
+    const d = distPointToSegment(p, pts[i], pts[i + 1])
+    if (d < best) best = d
+  }
+  return best
+}
+
+function eraseAtPoint(p: Point) {
+  const layer = all_stage_layers.value[layer_index.value]
+  const st = layer?.stage
+  if (!layer || !st) return
+
+  // Radius uses the shared strokeWidth slider.
+  // Add a small constant so it's not too strict.
+  const radius = Math.max(2, strokeWidth.value * 0.6)
+
+  // Iterate from topmost stroke to bottommost (end of undo_stack is last drawn)
+  for (let i = layer.undo_stack.length - 1; i >= 0; i--) {
+    const id = layer.undo_stack[i]
+    const stroke = layer.objectsById[id]
+    if (!stroke) continue
+
+    const d = distPointToPolyline(p, stroke.points as any)
+    if (d > radius) continue
+
+    const found = st.container.getChildByName(id)
+    if (found) st.container.removeChild(found)
+
+    // Remove from stacks so undo/redo doesn't revive unexpected strokes.
+    layer.undo_stack.splice(i, 1)
+    layer.redo_stack = layer.redo_stack.filter((x) => x !== id)
+
+    renderAll()
+    return
   }
 }
 
@@ -891,6 +983,8 @@ function handleKeydown(event: KeyboardEvent) {
     saveRevision()
   } else if (event.key === 'l') {
     handleChangeLayer()
+  } else if (event.shiftKey && (event.key === 'D' || event.key === 'd')) {
+    toolMode.value = toolMode.value === 'pen' ? 'eraser' : 'pen'
   }
 }
 
@@ -923,6 +1017,33 @@ onMounted(async () => {
     }
 
     const p = eventToPoint(drawingCanvasElement, ev)
+
+    if (toolMode.value === 'eraser') {
+      // Treat erasing as an edit that invalidates redo history.
+      layer.redo_stack = []
+      eraseAtPoint(p)
+
+      windowMoveHandler = (moveEv: PointerEvent) => {
+        if (activePointerId !== moveEv.pointerId) return
+        if (!drawingCanvasElement) return
+        eraseAtPoint(eventToPoint(drawingCanvasElement, moveEv))
+      }
+
+      windowUpHandler = (upEv: PointerEvent) => {
+        if (activePointerId !== upEv.pointerId) return
+        activePointerId = null
+        if (windowMoveHandler) window.removeEventListener('pointermove', windowMoveHandler)
+        if (windowUpHandler) window.removeEventListener('pointerup', windowUpHandler)
+        windowMoveHandler = null
+        windowUpHandler = null
+      }
+
+      window.addEventListener('pointermove', windowMoveHandler, { passive: true })
+      window.addEventListener('pointerup', windowUpHandler, { passive: true })
+      return
+    }
+
+    // pen
     const id = String(nextStrokeId++)
 
     if (!pixi) return
@@ -1034,6 +1155,12 @@ onBeforeUnmount(() => {
   color: #444;
   width: 48px;
   text-align: left;
+}
+
+.tool_hint {
+  font-size: 11px;
+  color: #666;
+  margin-left: 6px;
 }
 
 .container {
