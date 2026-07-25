@@ -279,15 +279,14 @@ async function createStageFromCanvas(canvas: HTMLCanvasElement): Promise<PixiSta
 
   const renderer = new pixi.CanvasRenderer()
   await renderer.init({
-    view: canvas,
+    canvas: canvas,
     width: canvas.width,
     height: canvas.height,
     antialias: true,
-    backgroundAlpha: 0,
-    preserveDrawingBuffer: true
-  } as any)
+    backgroundAlpha: 0
+  })
 
-  if (!renderer.view) {
+  if (!renderer.canvas) {
     throw new Error('Failed to initialize Pixi renderer with the provided canvas')
   }
 
@@ -383,7 +382,7 @@ function createStrokeGraphics(id: ObjectId, color: string, width: number, points
 function createNamedGraphics(id: ObjectId): Graphics {
   if (!pixi) throw new Error('Pixi is not loaded')
   const g = new pixi.Graphics()
-  g.name = id
+  g.label = id
   return g
 }
 
@@ -647,7 +646,7 @@ function saveRevision() {
   all_stage_layers.value.forEach((layer) => {
     // NOTE: children order affects z-order, so we keep the current order when
     // computing the revision key.
-    const rev = (layer.stage?.container?.children?.map((x) => String((x as any)?.name ?? '')) ?? []).filter(Boolean)
+    const rev = (layer.stage?.container?.children?.map((x) => String((x as any)?.label ?? '')) ?? []).filter(Boolean)
     // ハッシュを作成してレイヤーのキーとする
     const layerKey = sha256(`${layer.index}:${rev.join(',')}`).toString()
     layer_objects.push({ key: layerKey, revs: rev })
