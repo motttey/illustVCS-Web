@@ -266,17 +266,10 @@ function redrawPath(g: Graphics, color: string, width: number, points: Point[]) 
     g.lineTo(points[i].x, points[i].y)
   }
 
-  // Some Pixi versions require stroke() to finalize.
-  try {
-    ;(g as any).stroke?.()
-  } catch {
-    console.log('stroke() failed, likely due to Pixi version. If you see rendering issues, consider upgrading Pixi to v8+.')
-  }
+  g.stroke?.()
 }
 
 async function createStageFromCanvas(canvas: HTMLCanvasElement): Promise<PixiStage> {
-  if (!pixi) throw new Error('Pixi is not loaded')
-
   const renderer = new pixi.CanvasRenderer()
   await renderer.init({
     canvas: canvas,
@@ -380,7 +373,6 @@ function createStrokeGraphics(id: ObjectId, color: string, width: number, points
 }
 
 function createNamedGraphics(id: ObjectId): Graphics {
-  if (!pixi) throw new Error('Pixi is not loaded')
   const g = new pixi.Graphics()
   g.label = id
   return g
@@ -1163,11 +1155,10 @@ onBeforeUnmount(() => {
 }
 
 .container {
-  margin: 0 auto;
+  margin: 1rem auto;
   min-height: 100vh;
   display: flex;
   justify-content: center;
-  align-items: center;
   text-align: center;
 }
 
@@ -1176,7 +1167,7 @@ onBeforeUnmount(() => {
   font-weight: 500;
   font-size: 72px;
   color: #888;
-  letter-spacing: 10px;
+  letter-spacing: 8px;
 }
 
 .subtitle {
