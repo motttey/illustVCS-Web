@@ -15,50 +15,61 @@
             <small class="operation_hint">s: save / r: redo / ctrl: undo / l: change layer / shift+d: toggle eraser</small>
           </div>
 
-          <div class="revisions_toolbar btn-group" role="group" aria-label="Operations">
+          <div class="revisions_actions">
             <button
               type="button"
-              class="btn btn-sm btn-outline-primary"
-              title="Save (S)"
-              @click="saveRevision"
+              class="btn btn-primary psd_export_button"
+              :disabled="!canExportPsd || isExportingPsd"
+              @click="exportPsd"
             >
-              Save
+              {{ isExportingPsd ? 'Exporting PSD...' : 'Export PSD' }}
             </button>
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary"
-              title="Undo (Ctrl)"
-              :disabled="!canUndo"
-              @click="handleUndo"
-            >
-              Undo
-            </button>
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary"
-              title="Redo (R)"
-              :disabled="!canRedo"
-              @click="handleRedo"
-            >
-              Redo
-            </button>
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-success"
-              title="Change layer (L)"
-              @click="handleChangeLayer"
-            >
-              Next layer
-            </button>
+            <div class="revisions_toolbar btn-group" role="group" aria-label="Operations">
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-primary"
+                title="Save (S)"
+                @click="saveRevision"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                title="Undo (Ctrl)"
+                :disabled="!canUndo"
+                @click="handleUndo"
+              >
+                Undo
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                title="Redo (R)"
+                :disabled="!canRedo"
+                @click="handleRedo"
+              >
+                Redo
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-success"
+                title="Change layer (L)"
+                @click="handleChangeLayer"
+              >
+                Next layer
+              </button>
 
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-info"
-              title="Add layer"
-              @click="addLayer"
-            >
-              Add layer
-            </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-info"
+                title="Add layer"
+                @click="addLayer"
+              >
+                Add layer
+              </button>
+            </div>
+            <small v-if="psdExportError" class="text-danger" role="alert">{{ psdExportError }}</small>
           </div>
         </div>
       </div>
@@ -167,6 +178,7 @@ import * as d3 from "d3";
 import * as d3dag from "d3-dag";
 import type { CanvasRenderer, Container, Graphics } from 'pixi.js'
 import * as pixi from 'pixi.js'
+import type { Psd } from 'ag-psd'
 
 import type {
   CacheRef,
@@ -225,6 +237,65 @@ const canRedo = computed(() => {
   const layer = all_stage_layers.value[layer_index.value]
   return (layer?.redo_stack?.length ?? 0) > 0
 })
+
+const canExportPsd = computed(() =>
+  all_stage_layers.value.length > 0 && all_stage_layers.value.every(layer => layer.stage)
+)
+const isExportingPsd = ref(false)
+const psdExportError = ref('')
+
+async function exportPsd() {
+  if (!canExportPsd.value || isExportingPsd.value) return
+
+  isExportingPsd.value = true
+  psdExportError.value = ''
+
+  try {
+    await nextTick()
+    const stages = all_stage_layers.value.map(layer => {
+      if (!layer.stage) throw new Error('Layer canvas is not ready')
+      layer.stage.render()
+      return { index: layer.index, canvas: layer.stage.canvas }
+    })
+
+    const { width, height } = stages[0].canvas
+    const composite = document.createElement('canvas')
+    composite.width = width
+    composite.height = height
+    const context = composite.getContext('2d')
+    if (!context) throw new Error('Could not create the PSD preview')
+
+    // Canvas elements are stacked from bottom to top in the page.
+    for (const stage of stages) context.drawImage(stage.canvas, 0, 0)
+
+    const psd: Psd = {
+      width,
+      height,
+      canvas: composite,
+      // PSD layers are listed from top to bottom.
+      children: stages.reverse().map(stage => ({
+        name: `Layer ${stage.index}`,
+        canvas: stage.canvas
+      }))
+    }
+
+    const { writePsd } = await import('ag-psd')
+    const blob = new Blob([writePsd(psd)], { type: 'image/vnd.adobe.photoshop' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'illustVCS.psd'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (error) {
+    console.error('PSD export failed', error)
+    psdExportError.value = 'PSD export failed. Please try again.'
+  } finally {
+    isExportingPsd.value = false
+  }
+}
 
 const toolMode = ref<'pen' | 'eraser'>('pen')
 
@@ -1300,6 +1371,20 @@ canvas {
 
 .revisions_toolbar {
   flex: 0 0 auto;
+}
+
+.revisions_actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.psd_export_button {
+  padding: 8px 20px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .operation_hint {

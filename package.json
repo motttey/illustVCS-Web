@@ -12,6 +12,7 @@
     "preview": "nuxi preview"
   },
   "dependencies": {
+    "ag-psd": "^31.0.2",
     "bootstrap": "^5.0.0",
     "bootstrap-vue-next": "^0.42.0",
     "crypto-js": "^4.2.0",
