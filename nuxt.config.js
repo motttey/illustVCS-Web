@@ -17,6 +17,15 @@ export default defineNuxtConfig({
 
   modules: ['@bootstrap-vue-next/nuxt'],
 
+  bootstrapVueNext: {
+    composables: {
+      all: true,
+      // These two exports exist only in the shared composables entry point in 0.42.0.
+      useScrollLock: false,
+      useOrchestratorRegistry: false
+    }
+  },
+
   vite: {
     optimizeDeps: {
       include: [
