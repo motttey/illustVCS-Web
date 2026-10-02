@@ -238,8 +238,11 @@ const canRedo = computed(() => {
   return (layer?.redo_stack?.length ?? 0) > 0
 })
 
+const isInitialCanvasReady = ref(false)
 const canExportPsd = computed(() =>
-  all_stage_layers.value.length > 0 && all_stage_layers.value.every(layer => layer.stage)
+  isInitialCanvasReady.value &&
+  all_stage_layers.value.length > 0 &&
+  all_stage_layers.value.every(layer => layer.stage)
 )
 const isExportingPsd = ref(false)
 const psdExportError = ref('')
@@ -1060,6 +1063,7 @@ onMounted(async () => {
   drawing_stage.value = await createStageFromCanvas(drawingCanvasElement)
 
   await addLayer()
+  isInitialCanvasReady.value = true
 
   // Pointer events
   pointerDownHandler = (ev: PointerEvent) => {
@@ -1382,9 +1386,12 @@ canvas {
 }
 
 .psd_export_button {
+  width: 192px;
+  height: 44px;
   padding: 8px 20px;
   font-size: 16px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .operation_hint {
